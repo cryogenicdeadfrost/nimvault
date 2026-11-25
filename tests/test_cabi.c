@@ -76,9 +76,10 @@ static int pump_pair(nimvault_engine_t client, nimvault_engine_t server) {
 
 int main(int argc, char **argv) {
     if (argc < 3) {
-        fprintf(stderr, "Usage: %s <cert.pem> <key.pem>\n", argv[0]);
+        fprintf(stderr, "Usage: %s <cert.pem> <key.pem> [hostname]\n", argv[0]);
         return 2;
     }
+    const char *expected_host = (argc >= 4) ? argv[3] : "cabi.nimvault.test";
 
     printf("[C-ABI] nimvault version: %s\n", nimvault_version());
     printf("[C-ABI] embedded roots:   %d\n", nimvault_has_embedded_roots());
@@ -101,7 +102,7 @@ int main(int argc, char **argv) {
     }
 
     /* 1. Verified handshake + encrypted roundtrip */
-    nimvault_engine_t client = nimvault_client_new_with_pem("cabi.nimvault.test", cert_pem, cert_len, 0);
+    nimvault_engine_t client = nimvault_client_new_with_pem(expected_host, cert_pem, cert_len, 0);
     nimvault_engine_t server = nimvault_server_new(cert_pem, cert_len, key_pem, key_len);
     if (!client || !server) {
         fprintf(stderr, "FAIL: failed to allocate C-ABI engines\n");
