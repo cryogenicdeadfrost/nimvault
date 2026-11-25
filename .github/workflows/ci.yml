@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nim 2.0.8
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.0.8'
+
+      - name: Run unit, trust store, keygen, loopback, and async/sync tests
+        shell: bash
+        run: |
+          nim c -r --hints:off tests/test_errors.nim
+          nim c -r --hints:off -d:nimvaultEmbedRoots tests/test_truststore.nim
+          nim c -r --hints:off tests/test_truststore.nim
+          nim c -r --hints:off tests/test_x509_keygen.nim
+          nim c -r --hints:off -d:nimvaultEmbedRoots tests/test_engine_loopback.nim
+          nim c -r --hints:off -d:nimvaultEmbedRoots --threads:on tests/test_client_async.nim
+
+      - name: Build CLI and verify commands
+        shell: bash
+        run: |
+          nim c -d:release -d:nimvaultEmbedRoots -o:nimvault_bin src/nimvault_cli.nim
+          ./nimvault_bin version
+          ./nimvault_bin trust
+          ./nimvault_bin keygen --cn ci.nimvault.test --cert-out ci.cert.pem --key-out ci.key.pem
+
+      - name: Build C-ABI library and run C99 verification test
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            nim c --app:lib -d:release -d:nimvaultEmbedRoots -o:nimvault.dll src/nimvault/cabi.nim
+            gcc -Iinclude tests/test_cabi.c nimvault.dll -o test_cabi.exe
+            ./test_cabi.exe ci.cert.pem ci.key.pem
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            nim c --app:lib -d:release -d:nimvaultEmbedRoots -o:libnimvault.dylib src/nimvault/cabi.nim
+            cc -Iinclude tests/test_cabi.c -L. -lnimvault -Wl,-rpath,. -o test_cabi
+            ./test_cabi ci.cert.pem ci.key.pem
+          else
+            nim c --app:lib -d:release -d:nimvaultEmbedRoots -o:libnimvault.so src/nimvault/cabi.nim
+            gcc -Iinclude tests/test_cabi.c -L. -lnimvault -Wl,-rpath,. -o test_cabi
+            ./test_cabi ci.cert.pem ci.key.pem
+          fi

@@ -1,0 +1,31 @@
+# Nim build outputs and caches
+nimcache/
+nimcache_*/
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+*.o
+*.obj
+*.pdb
+*.exp
+*.out
+
+# Built CLI & test binaries
+nimvault
+nimvault_cli
+tests/test_*
+!tests/*.nim
+!tests/*.c
+
+# Archives
+vendor/*.tar.gz
+vendor/*.zip
+
+# Temporary generated certs/keys
+*.key.pem
+*.cert.pem
+.DS_Store
+Thumbs.db
