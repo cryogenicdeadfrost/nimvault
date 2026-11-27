@@ -1,11 +1,11 @@
-# Regenerates src/nimvault/private/bearssl_sources.nim from src/nimvault/vendor/bearssl/src/**/*.c
+# Regenerates src/nimtls/private/bearssl_sources.nim from src/nimtls/vendor/bearssl/src/**/*.c
 
 import std/[os, algorithm, strutils]
 
 proc spitSources() =
   let repoRoot = currentSourcePath.parentDir.parentDir
-  let bearSrc = repoRoot / "src" / "nimvault" / "vendor" / "bearssl" / "src"
-  let outFile = repoRoot / "src" / "nimvault" / "private" / "bearssl_sources.nim"
+  let bearSrc = repoRoot / "src" / "nimtls" / "vendor" / "bearssl" / "src"
+  let outFile = repoRoot / "src" / "nimtls" / "private" / "bearssl_sources.nim"
 
   var files: seq[string] = @[]
   for path in walkDirRec(bearSrc):

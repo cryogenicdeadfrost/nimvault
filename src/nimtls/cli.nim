@@ -8,17 +8,17 @@ import ./engine
 import ./client
 import ./keygen
 
-const NimvaultVersion* = "0.2.0"
+const NimtlsVersion* = "0.3.0"
 
 proc printUsage() =
-  echo """nimvault """ & NimvaultVersion & """ (BearSSL 0.6 static TLS, zero OpenSSL)
+  echo """nimtls """ & NimtlsVersion & """ (BearSSL 0.6 static TLS, zero OpenSSL)
 
 Usage:
-  nimvault trust   [options]             Show which CA trust store won
-  nimvault probe   <host[:port]> [opts]  Run a TLS handshake and inspect cert / errors
-  nimvault fetch   <https://url> [opts]  Minimal HTTPS GET/HEAD without curl or OpenSSL
-  nimvault keygen  [options]             Mint an ECDSA P-256 key + self-signed X.509 v3 cert
-  nimvault version                       Show build info
+  nimtls trust   [options]             Show which CA trust store won
+  nimtls probe   <host[:port]> [opts]  Run a TLS handshake and inspect cert / errors
+  nimtls fetch   <https://url> [opts]  Minimal HTTPS GET/HEAD without curl or OpenSSL
+  nimtls keygen  [options]             Mint an ECDSA P-256 key + self-signed X.509 v3 cert
+  nimtls version                       Show build info
 
 Trust options:
   --ca-file <path>      Validate a specific PEM CA bundle
@@ -43,7 +43,7 @@ Fetch options:
 
 Keygen options:
   --cn <name>           Common Name (default: localhost)
-  --org <name>          Organization (default: nimvault-dev)
+  --org <name>          Organization (default: nimtls-dev)
   --san <dns>           SAN DNS entry (repeatable)
   --days <num>          Validity in days (default: 365)
   --key-out <path>      Write PKCS#8 private key PEM
@@ -61,10 +61,10 @@ proc tryFlagInt(flag, raw: string, dest: var int): bool =
     false
 
 proc cmdVersion(): int =
-  echo "nimvault ", NimvaultVersion
+  echo "nimtls ", NimtlsVersion
   echo "  TLS Backend:     BearSSL 0.6 (static, zero OpenSSL)"
   echo "  TLS Versions:    TLS 1.0 - TLS 1.2 (AES-GCM, ChaCha20-Poly1305)"
-  echo "  Embedded Roots:  ", (if hasEmbeddedRoots(): "enabled (Mozilla bundle baked in)" else: "disabled (pass -d:nimvaultEmbedRoots)")
+  echo "  Embedded Roots:  ", (if hasEmbeddedRoots(): "enabled (Mozilla bundle baked in)" else: "disabled (pass -d:nimtlsEmbedRoots)")
   0
 
 proc cmdTrust(args: seq[string]): int =
@@ -175,7 +175,7 @@ proc cmdProbe(args: seq[string]): int =
     inc i
 
   if target.len == 0:
-    stderr.writeLine("Usage: nimvault probe <host[:port]> [options]")
+    stderr.writeLine("Usage: nimtls probe <host[:port]> [options]")
     return 2
 
   var (host, port) = splitHostPort(target, 443)
@@ -280,7 +280,7 @@ proc cmdFetch(args: seq[string]): int =
     inc i
 
   if url.len == 0:
-    stderr.writeLine("Usage: nimvault fetch <https://url> [options]")
+    stderr.writeLine("Usage: nimtls fetch <https://url> [options]")
     return 2
 
   var cfg = defaultTlsConfig()

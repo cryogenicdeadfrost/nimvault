@@ -14,9 +14,9 @@ nimcache_*/
 *.out
 
 # Built CLI & test binaries
-/nimvault
-/nimvault_cli
-/nimvault_bin
+/nimtls
+/nimtls_cli
+/nimtls_bin
 tests/test_*
 !tests/*.nim
 !tests/*.c

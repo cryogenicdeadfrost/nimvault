@@ -1,9 +1,9 @@
 # Minimal local HTTPS server using mintSelfSigned + wrapServerAsync.
 # Build & run: nim c -r examples/local_https_server.nim
-# Then test in another terminal: nimvault fetch --insecure https://127.0.0.1:8443/
+# Then test in another terminal: nimtls fetch --insecure https://127.0.0.1:8443/
 
 import std/[asyncdispatch, asyncnet]
-import ../src/nimvault
+import ../src/nimtls
 
 proc handlePeer(raw: AsyncSocket, certPem, keyPem: string) {.async.} =
   let wrapped = await wrapServerAsync(raw, certPem, keyPem)
@@ -13,7 +13,7 @@ proc handlePeer(raw: AsyncSocket, certPem, keyPem: string) {.async.} =
   let s = wrapped.val
   let req = await s.recvAsync(4096)
   if req.isOk and req.val.len > 0:
-    let body = "hello from nimvault (zero OpenSSL)\n"
+    let body = "hello from nimtls (zero OpenSSL)\n"
     let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: " &
                $body.len & "\r\nConnection: close\r\n\r\n" & body
     discard await s.sendAsync(resp)

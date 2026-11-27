@@ -1,5 +1,5 @@
 import std/os
-import ./nimvault/cli
+import ./nimtls/cli
 
 when isMainModule:
   quit(runCli(commandLineParams()))

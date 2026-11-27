@@ -1,8 +1,8 @@
 # Standalone HTTPS GET with zero -d:ssl and zero OpenSSL.
-# Build & run: nim c -r -d:nimvaultEmbedRoots examples/fetch_https.nim
+# Build & run: nim c -r -d:nimtlsEmbedRoots examples/fetch_https.nim
 
 import std/os
-import ../src/nimvault
+import ../src/nimtls
 
 let url = if paramCount() >= 1: paramStr(1) else: "https://example.com/"
 let res = fetch(url)

@@ -1,5 +1,5 @@
 /*
- * nimvault BearSSL thin C shim
+ * nimtls BearSSL thin C shim
  *
  * Isolates opaque BearSSL struct layouts, provides a capturing X.509 wrapper
  * (so peer leaf certificates are inspectable even when validation fails),

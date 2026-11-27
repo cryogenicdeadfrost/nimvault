@@ -1,7 +1,7 @@
 # Pure Sans-I/O in-memory TLS 1.2 loopback (zero sockets, zero OS network calls).
 # Build & run: nim c -r examples/sans_io_mem.nim
 
-import ../src/nimvault
+import ../src/nimtls
 
 proc pipeOnce(src, dst: TlsEngine): bool =
   let wire = src.drainEncryptedAll()

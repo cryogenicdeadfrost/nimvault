@@ -90,10 +90,10 @@ proc `=destroy`*(e: TlsEngineObj) =
   if e.handle != nil:
     nv_engine_free(e.handle)
 
-proc newClientEngine*(config: TlsConfig): VaultResult[TlsEngine] =
+proc newClientEngine*(config: TlsConfig): TlsResult[TlsEngine] =
   if ord(config.minVersion) > ord(config.maxVersion):
     return err[TlsEngine](
-      veInvalidConfig,
+      teInvalidConfig,
       "minVersion cannot be higher than maxVersion",
       suggestion = "Set minVersion <= maxVersion (default: TLS 1.2)."
     )
@@ -136,12 +136,12 @@ proc newClientEngine*(config: TlsConfig): VaultResult[TlsEngine] =
   if h == nil:
     if outErr > 0:
       return err[TlsEngine](decodeBearErr(int(outErr), config.serverName))
-    return err[TlsEngine](veInternalError, "Failed to init BearSSL client engine (code " & $outErr & ")")
+    return err[TlsEngine](teInternalError, "Failed to init BearSSL client engine (code " & $outErr & ")")
 
   if not config.insecureSkipVerify and taCount == 0:
     nv_engine_free(h)
     return err[TlsEngine](
-      veTrustStoreInvalid,
+      teTrustStoreInvalid,
       "Trust bundle parsed 0 usable RSA/EC trust anchors",
       likelyCause = "CA bundle has no RSA or ECDSA roots that BearSSL understands.",
       suggestion = "Use a standard Mozilla/OS PEM bundle."
@@ -157,11 +157,11 @@ proc newClientEngine*(config: TlsConfig): VaultResult[TlsEngine] =
     handshakeCompleted: false
   ))
 
-proc newServerEngine*(config: TlsServerConfig): VaultResult[TlsEngine] =
+proc newServerEngine*(config: TlsServerConfig): TlsResult[TlsEngine] =
   if config.certPem.len == 0 or config.keyPem.len == 0:
-    return err[TlsEngine](veInvalidConfig, "Server engine needs both certPem and keyPem")
+    return err[TlsEngine](teInvalidConfig, "Server engine needs both certPem and keyPem")
   if ord(config.minVersion) > ord(config.maxVersion):
-    return err[TlsEngine](veInvalidConfig, "minVersion cannot be higher than maxVersion")
+    return err[TlsEngine](teInvalidConfig, "minVersion cannot be higher than maxVersion")
 
   var alpnPtrs: seq[cstring] = @[]
   for proto in config.alpnProtocols:
@@ -179,7 +179,7 @@ proc newServerEngine*(config: TlsServerConfig): VaultResult[TlsEngine] =
   )
   if h == nil:
     if outErr > 0: return err[TlsEngine](decodeBearErr(int(outErr)))
-    return err[TlsEngine](veInvalidConfig, "Failed to init BearSSL server engine (code " & $outErr & ")")
+    return err[TlsEngine](teInvalidConfig, "Failed to init BearSSL server engine (code " & $outErr & ")")
 
   ok(TlsEngine(handle: h, isServer: true, trustSource: "server", handshakeCompleted: false))
 
@@ -191,7 +191,7 @@ proc rawErrorCode*(e: TlsEngine): int {.inline.} =
   if e == nil or e.handle == nil: return 0
   int(nv_engine_last_error(e.handle))
 
-proc lastError*(e: TlsEngine): VaultError =
+proc lastError*(e: TlsEngine): TlsError =
   decodeBearErr(e.rawErrorCode(), if e != nil: e.serverName else: "")
 
 proc isHandshakeDone*(e: TlsEngine): bool =

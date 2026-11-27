@@ -2,7 +2,7 @@
 ## async (`async_client.nim`) adapters using real sockets + BearSSL server.
 
 import std/[unittest, asyncdispatch, asyncnet, net, strutils]
-import ../src/nimvault/[errors, engine, keygen, client, async_client]
+import ../src/nimtls/[errors, engine, keygen, client, async_client]
 
 proc serveOneTlsClient(sock: AsyncSocket, certPem, keyPem: string): Future[void] {.async.} =
   defer: sock.close()
@@ -46,7 +46,7 @@ proc serveOneTlsClient(sock: AsyncSocket, certPem, keyPem: string): Future[void]
         let resp = if reqAccum == "PING":
           "PONG"
         else:
-          "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nhello-from-nimvault-tls"
+          "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nhello-from-nimtls-tls"
         var sent = 0
         while sent < resp.len:
           let w = srv.writePlaintext(resp.toOpenArrayByte(sent, resp.high))
@@ -145,7 +145,7 @@ suite "Sync & Async TCP TLS Adapters (Localhost Server)":
             let resp = if "/chunked" in reqAccum:
               "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n7\r\n-chunks\r\n0\r\n\r\n"
             else:
-              "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nhello-from-nimvault-tls"
+              "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nhello-from-nimtls-tls"
             var sent = 0
             while sent < resp.len:
               let w = srv.writePlaintext(resp.toOpenArrayByte(sent, resp.high))
@@ -192,7 +192,7 @@ suite "Sync & Async TCP TLS Adapters (Localhost Server)":
     let httpRes = httpGet("127.0.0.1", "/status", port, cfg, timeoutMs = 5000)
     doAssert httpRes.isOk, "httpGet failed: " & formatDiagnostic(httpRes.err)
     check httpRes.val.statusCode == 200
-    check httpRes.val.body == "hello-from-nimvault-tls"
+    check httpRes.val.body == "hello-from-nimtls-tls"
     check httpRes.val.peerInfo.verified
 
     # 3. fetch() with Transfer-Encoding: chunked

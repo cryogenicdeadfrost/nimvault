@@ -1,8 +1,8 @@
 # Async TLS client on std/asyncdispatch.
-# Build & run: nim c -r -d:nimvaultEmbedRoots examples/async_fetch.nim
+# Build & run: nim c -r -d:nimtlsEmbedRoots examples/async_fetch.nim
 
 import std/asyncdispatch
-import ../src/nimvault
+import ../src/nimtls
 
 proc main() {.async.} =
   let conn = await dialAsync("example.com", 443)

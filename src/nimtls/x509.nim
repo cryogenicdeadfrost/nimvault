@@ -157,13 +157,13 @@ proc countPemCerts*(pemText: string): int =
     if s == "-----BEGIN CERTIFICATE-----" or s == "-----BEGIN TRUSTED CERTIFICATE-----":
       inc result
 
-proc chewDer*(buf: openArray[byte], pos, limit: int): VaultResult[DerNode] =
+proc chewDer*(buf: openArray[byte], pos, limit: int): TlsResult[DerNode] =
   if pos >= limit:
-    return err[DerNode](veCertificateInvalid, "Unexpected end of ASN.1 DER data")
+    return err[DerNode](teCertificateInvalid, "Unexpected end of ASN.1 DER data")
   let tag = buf[pos]
   var idx = pos + 1
   if idx >= limit:
-    return err[DerNode](veCertificateInvalid, "Truncated ASN.1 DER length")
+    return err[DerNode](teCertificateInvalid, "Truncated ASN.1 DER length")
   let firstLen = int(buf[idx])
   inc idx
   var contentLen = 0
@@ -172,15 +172,15 @@ proc chewDer*(buf: openArray[byte], pos, limit: int): VaultResult[DerNode] =
   else:
     let octets = firstLen and 0x7f
     if octets == 0 or octets > 4 or idx + octets > limit:
-      return err[DerNode](veCertificateInvalid, "Invalid ASN.1 DER length encoding")
+      return err[DerNode](teCertificateInvalid, "Invalid ASN.1 DER length encoding")
     for _ in 0 ..< octets:
       contentLen = (contentLen shl 8) or int(buf[idx])
       inc idx
   if contentLen < 0 or idx + contentLen > limit:
-    return err[DerNode](veCertificateInvalid, "ASN.1 DER element exceeds buffer bounds")
+    return err[DerNode](teCertificateInvalid, "ASN.1 DER element exceeds buffer bounds")
   ok(DerNode(tag: tag, contentStart: idx, contentLen: contentLen, nextPos: idx + contentLen))
 
-proc readDerNode*(buf: openArray[byte], pos, limit: int): VaultResult[DerNode] {.inline.} =
+proc readDerNode*(buf: openArray[byte], pos, limit: int): TlsResult[DerNode] {.inline.} =
   chewDer(buf, pos, limit)
 
 proc unspoolOid*(buf: openArray[byte], startPos, length: int): string =
@@ -340,27 +340,27 @@ proc pickExts(buf: openArray[byte], startPos, endPos: int, info: var CertInfo) =
         if caBool.isOk and caBool.val.tag == 0x01'u8 and caBool.val.contentLen == 1:
           info.isCA = buf[caBool.val.contentStart] != 0'u8
 
-proc parseCertDer*(der: openArray[byte]): VaultResult[CertInfo] =
+proc parseCertDer*(der: openArray[byte]): TlsResult[CertInfo] =
   if der.len == 0:
-    return err[CertInfo](veCertificateInvalid, "Empty certificate DER buffer")
+    return err[CertInfo](teCertificateInvalid, "Empty certificate DER buffer")
 
   var info = CertInfo(version: 1, derLen: der.len)
   info.sha256Fingerprint = hexColons(sha256Digest(der))
 
   let certRes = chewDer(der, 0, der.len)
   if not certRes.isOk or certRes.val.tag != 0x30'u8:
-    return err[CertInfo](veCertificateInvalid, "Certificate is not a valid ASN.1 SEQUENCE")
+    return err[CertInfo](teCertificateInvalid, "Certificate is not a valid ASN.1 SEQUENCE")
 
   let tbsRes = chewDer(der, certRes.val.contentStart, certRes.val.nextPos)
   if not tbsRes.isOk or tbsRes.val.tag != 0x30'u8:
-    return err[CertInfo](veCertificateInvalid, "Certificate missing TBSCertificate SEQUENCE")
+    return err[CertInfo](teCertificateInvalid, "Certificate missing TBSCertificate SEQUENCE")
 
   var pos = tbsRes.val.contentStart
   let tbsEnd = tbsRes.val.nextPos
 
   let firstRes = chewDer(der, pos, tbsEnd)
   if not firstRes.isOk:
-    return err[CertInfo](veCertificateInvalid, "Truncated TBSCertificate")
+    return err[CertInfo](teCertificateInvalid, "Truncated TBSCertificate")
   var serialNode: DerNode
   if firstRes.val.tag == 0xa0'u8:
     let verInt = chewDer(der, firstRes.val.contentStart, firstRes.val.nextPos)
@@ -369,7 +369,7 @@ proc parseCertDer*(der: openArray[byte]): VaultResult[CertInfo] =
     pos = firstRes.val.nextPos
     let serRes = chewDer(der, pos, tbsEnd)
     if not serRes.isOk:
-      return err[CertInfo](veCertificateInvalid, "Missing certificate serial number")
+      return err[CertInfo](teCertificateInvalid, "Missing certificate serial number")
     serialNode = serRes.val
   else:
     serialNode = firstRes.val
@@ -378,7 +378,7 @@ proc parseCertDer*(der: openArray[byte]): VaultResult[CertInfo] =
 
   let sigAlgRes = chewDer(der, pos, tbsEnd)
   if not sigAlgRes.isOk:
-    return err[CertInfo](veCertificateInvalid, "Missing signature algorithm")
+    return err[CertInfo](teCertificateInvalid, "Missing signature algorithm")
   pos = sigAlgRes.val.nextPos
   let sigOidRes = chewDer(der, sigAlgRes.val.contentStart, sigAlgRes.val.nextPos)
   if sigOidRes.isOk and sigOidRes.val.tag == 0x06'u8:
@@ -386,7 +386,7 @@ proc parseCertDer*(der: openArray[byte]): VaultResult[CertInfo] =
 
   let issuerRes = chewDer(der, pos, tbsEnd)
   if not issuerRes.isOk:
-    return err[CertInfo](veCertificateInvalid, "Missing certificate issuer")
+    return err[CertInfo](teCertificateInvalid, "Missing certificate issuer")
   pos = issuerRes.val.nextPos
   let (issFull, issCN) = biteDn(der, issuerRes.val.contentStart, issuerRes.val.nextPos)
   info.issuer = issFull
@@ -394,7 +394,7 @@ proc parseCertDer*(der: openArray[byte]): VaultResult[CertInfo] =
 
   let valRes = chewDer(der, pos, tbsEnd)
   if not valRes.isOk:
-    return err[CertInfo](veCertificateInvalid, "Missing certificate validity")
+    return err[CertInfo](teCertificateInvalid, "Missing certificate validity")
   pos = valRes.val.nextPos
   let nbRes = chewDer(der, valRes.val.contentStart, valRes.val.nextPos)
   if nbRes.isOk:
@@ -407,7 +407,7 @@ proc parseCertDer*(der: openArray[byte]): VaultResult[CertInfo] =
 
   let subjRes = chewDer(der, pos, tbsEnd)
   if not subjRes.isOk:
-    return err[CertInfo](veCertificateInvalid, "Missing certificate subject")
+    return err[CertInfo](teCertificateInvalid, "Missing certificate subject")
   pos = subjRes.val.nextPos
   let (subFull, subCN) = biteDn(der, subjRes.val.contentStart, subjRes.val.nextPos)
   info.subject = subFull
@@ -415,7 +415,7 @@ proc parseCertDer*(der: openArray[byte]): VaultResult[CertInfo] =
 
   let spkiRes = chewDer(der, pos, tbsEnd)
   if not spkiRes.isOk:
-    return err[CertInfo](veCertificateInvalid, "Missing SubjectPublicKeyInfo")
+    return err[CertInfo](teCertificateInvalid, "Missing SubjectPublicKeyInfo")
   pos = spkiRes.val.nextPos
   let algSeqRes = chewDer(der, spkiRes.val.contentStart, spkiRes.val.nextPos)
   if algSeqRes.isOk and algSeqRes.val.tag == 0x30'u8:
@@ -440,11 +440,11 @@ proc parseCertDer*(der: openArray[byte]): VaultResult[CertInfo] =
 
   ok(info)
 
-proc parseCertPem*(pemText: string): VaultResult[CertInfo] =
+proc parseCertPem*(pemText: string): TlsResult[CertInfo] =
   for b in decodePemBlocks(pemText):
     if b.label == "CERTIFICATE" or b.label == "TRUSTED CERTIFICATE":
       return parseCertDer(b.data)
-  err[CertInfo](veCertificateInvalid, "No CERTIFICATE block found in PEM input")
+  err[CertInfo](teCertificateInvalid, "No CERTIFICATE block found in PEM input")
 
 # DER builder helpers (used by keygen.nim)
 

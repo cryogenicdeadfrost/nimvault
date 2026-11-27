@@ -1,7 +1,7 @@
 import std/[unittest, strutils, times]
-import ../src/nimvault/[errors, engine, keygen]
+import ../src/nimtls/[errors, engine, keygen]
 
-proc pumpPair(client: TlsEngine, server: TlsEngine, maxSteps = 200): tuple[ok: bool, clientErr: VaultError, serverErr: VaultError] =
+proc pumpPair(client: TlsEngine, server: TlsEngine, maxSteps = 200): tuple[ok: bool, clientErr: TlsError, serverErr: TlsError] =
   ## Pure in-memory Sans-I/O pump connecting a client and server engine with zero sockets.
   var buf: array[4096, byte]
   for _ in 0 ..< maxSteps:
@@ -34,7 +34,7 @@ proc pumpPair(client: TlsEngine, server: TlsEngine, maxSteps = 200): tuple[ok: b
       return (false, client.lastError(), server.lastError())
 
     if client.isHandshakeDone() and server.isHandshakeDone() and not client.needsWrite() and not server.needsWrite():
-      return (true, VaultError(), VaultError())
+      return (true, TlsError(), TlsError())
 
     if not progressed:
       break
@@ -75,14 +75,14 @@ proc transferApp(sender: TlsEngine, receiver: TlsEngine, payload: string): strin
       break
 
 suite "Sans-I/O TlsEngine In-Memory Loopback":
-  var opts = defaultKeygenOptions("loopback.nimvault.test")
-  opts.sanDnsNames = @["loopback.nimvault.test", "alt.nimvault.test"]
+  var opts = defaultKeygenOptions("loopback.nimtls.test")
+  opts.sanDnsNames = @["loopback.nimtls.test", "alt.nimtls.test"]
   let certRes = generateSelfSignedEcP256(opts)
   doAssert certRes.isOk, certRes.err.message
   let serverBundle = certRes.val
 
   test "Verified TLS 1.2 handshake, ALPN, PeerInfo, 32KB bidirectional payload, and close_notify":
-    var cCfg = defaultTlsConfig("loopback.nimvault.test")
+    var cCfg = defaultTlsConfig("loopback.nimtls.test")
     cCfg.caPemOverride = serverBundle.certificatePem
     cCfg.alpnProtocols = @["h2", "http/1.1"]
 
@@ -106,15 +106,15 @@ suite "Sans-I/O TlsEngine In-Memory Loopback":
     check pInfo.selectedAlpn == "http/1.1"
     check pInfo.verified
     check pInfo.hasPeerCert
-    check pInfo.peerCert.subjectCN == "loopback.nimvault.test"
+    check pInfo.peerCert.subjectCN == "loopback.nimtls.test"
     check pInfo.chainLength == 1
 
     # 32KB multi-record bidirectional encrypted transfer
-    let clientMsg = repeat("NimVault-SansIO-Client->Server!", 1024)
+    let clientMsg = repeat("NimTLS-SansIO-Client->Server!", 1024)
     let gotOnServer = transferApp(client, server, clientMsg)
     check gotOnServer == clientMsg
 
-    let serverMsg = repeat("NimVault-SansIO-Server->Client!", 1024)
+    let serverMsg = repeat("NimTLS-SansIO-Server->Client!", 1024)
     let gotOnClient = transferApp(server, client, serverMsg)
     check gotOnClient == serverMsg
 
@@ -132,7 +132,7 @@ suite "Sans-I/O TlsEngine In-Memory Loopback":
     check client.rawErrorCode() == 0
     check server.rawErrorCode() == 0
 
-  test "Hostname mismatch produces actionable veHostnameMismatch and still captures leaf cert":
+  test "Hostname mismatch produces actionable teHostnameMismatch and still captures leaf cert":
     var cCfg = defaultTlsConfig("wrong-host.example")
     cCfg.caPemOverride = serverBundle.certificatePem
     var sCfg = defaultServerConfig(serverBundle.certificatePem, serverBundle.privateKeyPem)
@@ -142,17 +142,17 @@ suite "Sans-I/O TlsEngine In-Memory Loopback":
 
     let hs = pumpPair(client, server)
     check not hs.ok
-    check hs.clientErr.kind == veHostnameMismatch
+    check hs.clientErr.kind == teHostnameMismatch
     check "wrong-host.example" in hs.clientErr.message
 
     let pInfo = client.peerInfo()
     check not pInfo.verified
     check pInfo.hasPeerCert
-    check pInfo.peerCert.subjectCN == "loopback.nimvault.test"
+    check pInfo.peerCert.subjectCN == "loopback.nimtls.test"
 
-  test "Untrusted root CA produces actionable veCertificateUntrusted":
+  test "Untrusted root CA produces actionable teCertificateUntrusted":
     let otherCa = generateSelfSignedEcP256(defaultKeygenOptions("unrelated-ca.test")).get
-    var cCfg = defaultTlsConfig("loopback.nimvault.test")
+    var cCfg = defaultTlsConfig("loopback.nimtls.test")
     cCfg.caPemOverride = otherCa.certificatePem
     var sCfg = defaultServerConfig(serverBundle.certificatePem, serverBundle.privateKeyPem)
 
@@ -161,10 +161,10 @@ suite "Sans-I/O TlsEngine In-Memory Loopback":
 
     let hs = pumpPair(client, server)
     check not hs.ok
-    check hs.clientErr.kind == veCertificateUntrusted
+    check hs.clientErr.kind == teCertificateUntrusted
 
-  test "Expired certificate produces actionable veCertificateExpired":
-    var cCfg = defaultTlsConfig("loopback.nimvault.test")
+  test "Expired certificate produces actionable teCertificateExpired":
+    var cCfg = defaultTlsConfig("loopback.nimtls.test")
     cCfg.caPemOverride = serverBundle.certificatePem
     # 10 years in the future
     cCfg.validationTimeUnix = uint64(getTime().toUnix() + 10 * 365 * 86400)
@@ -175,7 +175,7 @@ suite "Sans-I/O TlsEngine In-Memory Loopback":
 
     let hs = pumpPair(client, server)
     check not hs.ok
-    check hs.clientErr.kind == veCertificateExpired
+    check hs.clientErr.kind == teCertificateExpired
 
   test "insecureSkipVerify allows inspecting untrusted / mismatched peer certs":
     var cCfg = defaultTlsConfig("wrong-host.example")
@@ -190,10 +190,10 @@ suite "Sans-I/O TlsEngine In-Memory Loopback":
     let pInfo = client.peerInfo()
     check not pInfo.verified
     check pInfo.hasPeerCert
-    check pInfo.peerCert.subjectCN == "loopback.nimvault.test"
+    check pInfo.peerCert.subjectCN == "loopback.nimtls.test"
 
-  test "Strict ALPN mismatch fails with actionable veAlpnMismatch":
-    var cCfg = defaultTlsConfig("loopback.nimvault.test")
+  test "Strict ALPN mismatch fails with actionable teAlpnMismatch":
+    var cCfg = defaultTlsConfig("loopback.nimtls.test")
     cCfg.caPemOverride = serverBundle.certificatePem
     cCfg.alpnProtocols = @["custom-proto/1"]
     cCfg.failOnAlpnMismatch = true
@@ -207,4 +207,4 @@ suite "Sans-I/O TlsEngine In-Memory Loopback":
 
     let hs = pumpPair(client, server)
     check not hs.ok
-    check hs.clientErr.kind == veAlpnMismatch
+    check hs.clientErr.kind == teAlpnMismatch

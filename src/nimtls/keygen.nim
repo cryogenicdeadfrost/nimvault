@@ -21,7 +21,7 @@ type
 proc defaultKeygenOptions*(commonName = "localhost"): KeygenOptions =
   KeygenOptions(
     commonName: commonName,
-    organization: "nimvault-dev",
+    organization: "nimtls-dev",
     sanDnsNames: @[commonName],
     validDays: 365,
     isCA: true
@@ -53,11 +53,11 @@ proc packKeyUsage(isCA: bool): seq[byte] =
   let unusedBits: byte = if isCA: 1'u8 else: 7'u8
   derSeq(derOid("2.5.29.15"), derBool(true), derOctetString(derWrap(0x03'u8, @[unusedBits, bits])))
 
-proc mintSelfSigned*(opts: KeygenOptions): VaultResult[GeneratedCertBundle] =
+proc mintSelfSigned*(opts: KeygenOptions): TlsResult[GeneratedCertBundle] =
   if opts.commonName.len == 0:
-    return err[GeneratedCertBundle](veKeygenFailed, "Common Name (CN) cannot be empty")
+    return err[GeneratedCertBundle](teKeygenFailed, "Common Name (CN) cannot be empty")
   if opts.validDays <= 0:
-    return err[GeneratedCertBundle](veKeygenFailed, "validDays must be > 0")
+    return err[GeneratedCertBundle](teKeygenFailed, "validDays must be > 0")
 
   var privRaw: array[32, byte]
   var privLen: csize_t = 32
@@ -71,11 +71,11 @@ proc mintSelfSigned*(opts: KeygenOptions): VaultResult[GeneratedCertBundle] =
     addr pubRaw[0], addr pubLen,
     addr pkcs8Der[0], addr pkcs8Len
   ) == 0:
-    return err[GeneratedCertBundle](veKeygenFailed, "OS CSPRNG ECDSA P-256 keygen failed")
+    return err[GeneratedCertBundle](teKeygenFailed, "OS CSPRNG ECDSA P-256 keygen failed")
 
   var serial: array[16, byte]
   if nv_random_bytes(addr serial[0], 16) == 0:
-    return err[GeneratedCertBundle](veKeygenFailed, "OS CSPRNG failed for cert serial")
+    return err[GeneratedCertBundle](teKeygenFailed, "OS CSPRNG failed for cert serial")
   serial[0] = (serial[0] and 0x7f'u8) or 0x01'u8 # keep ASN.1 INTEGER positive & non-zero
 
   let nowUtc = now().utc
@@ -117,12 +117,12 @@ proc mintSelfSigned*(opts: KeygenOptions): VaultResult[GeneratedCertBundle] =
     addr sigBuf[0], csize_t(sigBuf.len)
   )
   if sigLen == 0:
-    return err[GeneratedCertBundle](veKeygenFailed, "ECDSA P-256 signing failed")
+    return err[GeneratedCertBundle](teKeygenFailed, "ECDSA P-256 signing failed")
 
   let certDer = derSeq(tbsCert, sigAlgId, derBitString(sigBuf[0 ..< int(sigLen)]))
   let parsed = parseCertDer(certDer)
   if not parsed.isOk:
-    return err[GeneratedCertBundle](veKeygenFailed, "Self-parse failed on generated cert: " & parsed.err.message)
+    return err[GeneratedCertBundle](teKeygenFailed, "Self-parse failed on generated cert: " & parsed.err.message)
 
   ok(GeneratedCertBundle(
     privateKeyPem: encodePem("PRIVATE KEY", pkcs8Der[0 ..< int(pkcs8Len)]),
@@ -130,5 +130,5 @@ proc mintSelfSigned*(opts: KeygenOptions): VaultResult[GeneratedCertBundle] =
     certInfo: parsed.val
   ))
 
-proc generateSelfSignedEcP256*(opts: KeygenOptions): VaultResult[GeneratedCertBundle] {.inline.} =
+proc generateSelfSignedEcP256*(opts: KeygenOptions): TlsResult[GeneratedCertBundle] {.inline.} =
   mintSelfSigned(opts)

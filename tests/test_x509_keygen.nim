@@ -1,13 +1,13 @@
 import std/[unittest, os, strutils]
-import ../src/nimvault/[x509, keygen]
+import ../src/nimtls/[x509, keygen]
 
-const vendorCaPath = currentSourcePath.parentDir.parentDir / "src" / "nimvault" / "vendor" / "cacert.pem"
+const vendorCaPath = currentSourcePath.parentDir.parentDir / "src" / "nimtls" / "vendor" / "cacert.pem"
 
 suite "X.509 ASN.1 Parser & ECDSA P-256 Keygen":
   test "Generate self-signed ECDSA P-256 keypair and X.509 v3 certificate":
-    var opts = defaultKeygenOptions("test.nimvault.local")
-    opts.organization = "NimVault Test Org"
-    opts.sanDnsNames = @["test.nimvault.local", "localhost"]
+    var opts = defaultKeygenOptions("test.nimtls.local")
+    opts.organization = "NimTLS Test Org"
+    opts.sanDnsNames = @["test.nimtls.local", "localhost"]
     opts.validDays = 90
 
     let res = generateSelfSignedEcP256(opts)
@@ -23,10 +23,10 @@ suite "X.509 ASN.1 Parser & ECDSA P-256 Keygen":
     check parsed.isOk
     let info = parsed.val
     check info.version == 3
-    check info.subjectCN == "test.nimvault.local"
-    check info.issuerCN == "test.nimvault.local"
-    check "NimVault Test Org" in info.subject
-    check info.sanDnsNames == @["test.nimvault.local", "localhost"]
+    check info.subjectCN == "test.nimtls.local"
+    check info.issuerCN == "test.nimtls.local"
+    check "NimTLS Test Org" in info.subject
+    check info.sanDnsNames == @["test.nimtls.local", "localhost"]
     check info.isCA
     check "P-256" in info.keyAlgorithm
     check info.sigAlgorithm == "ecdsa-with-SHA256"

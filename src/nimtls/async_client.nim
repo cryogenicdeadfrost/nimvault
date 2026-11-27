@@ -5,12 +5,12 @@ import ./errors
 import ./engine
 
 type
-  AsyncVaultSocket* = ref object
+  AsyncTlsSocket* = ref object
     sock*: AsyncSocket
     engine*: TlsEngine
     closed*: bool
 
-proc flushWireAsync(vs: AsyncVaultSocket): Future[VaultResult[bool]] {.async.} =
+proc flushWireAsync(vs: AsyncTlsSocket): Future[TlsResult[bool]] {.async.} =
   var buf: array[4096, byte]
   while vs.engine.needsWrite():
     let n = vs.engine.drainEncrypted(buf)
@@ -20,10 +20,10 @@ proc flushWireAsync(vs: AsyncVaultSocket): Future[VaultResult[bool]] {.async.} =
     try:
       await vs.sock.send(chunk)
     except CatchableError as e:
-      return err[bool](veIoError, "Async socket write failed: " & e.msg)
+      return err[bool](teIoError, "Async socket write failed: " & e.msg)
   return ok(true)
 
-proc slurpWireAsync(vs: AsyncVaultSocket): Future[VaultResult[int]] {.async.} =
+proc slurpWireAsync(vs: AsyncTlsSocket): Future[TlsResult[int]] {.async.} =
   try:
     # Socket MUST be unbuffered (buffered = false), otherwise asyncnet.recv waits for all 4096 bytes.
     let data = await vs.sock.recv(4096)
@@ -35,9 +35,9 @@ proc slurpWireAsync(vs: AsyncVaultSocket): Future[VaultResult[int]] {.async.} =
       fed += c
     return ok(data.len)
   except CatchableError as e:
-    return err[int](veIoError, "Async socket read failed: " & e.msg)
+    return err[int](teIoError, "Async socket read failed: " & e.msg)
 
-proc closeAsync*(vs: AsyncVaultSocket): Future[void] {.async.} =
+proc closeAsync*(vs: AsyncTlsSocket): Future[void] {.async.} =
   if vs == nil or vs.closed: return
   vs.closed = true
   try:
@@ -50,11 +50,11 @@ proc closeAsync*(vs: AsyncVaultSocket): Future[void] {.async.} =
     try: vs.sock.close()
     except CatchableError: discard
 
-proc peerInfo*(vs: AsyncVaultSocket): PeerInfo =
+proc peerInfo*(vs: AsyncTlsSocket): PeerInfo =
   if vs == nil: return PeerInfo()
   vs.engine.peerInfo()
 
-proc crankHandshakeAsync(vs: AsyncVaultSocket): Future[VaultResult[bool]] {.async.} =
+proc crankHandshakeAsync(vs: AsyncTlsSocket): Future[TlsResult[bool]] {.async.} =
   while true:
     case vs.engine.nextAction()
     of taNeedWrite:
@@ -65,7 +65,7 @@ proc crankHandshakeAsync(vs: AsyncVaultSocket): Future[VaultResult[bool]] {.asyn
       if not r.isOk: return err[bool](r.err)
       if r.val == 0:
         let e = if vs.engine.rawErrorCode() != 0: vs.engine.lastError()
-                else: VaultError(kind: veIoError, alertCode: -1,
+                else: TlsError(kind: teIoError, alertCode: -1,
                                  message: "Peer closed socket during async TLS handshake")
         return err[bool](e)
     of taReady, taAppDataReady:
@@ -74,15 +74,15 @@ proc crankHandshakeAsync(vs: AsyncVaultSocket): Future[VaultResult[bool]] {.asyn
       discard await flushWireAsync(vs)
       return err[bool](vs.engine.lastError())
     of taClosed:
-      return err[bool](veConnectionClosed, "TLS engine closed during handshake")
+      return err[bool](teConnectionClosed, "TLS engine closed during handshake")
 
 proc connectAsync*(host: string, port = 443,
-                   config = defaultTlsConfig()): Future[VaultResult[AsyncVaultSocket]] {.async.} =
+                   config = defaultTlsConfig()): Future[TlsResult[AsyncTlsSocket]] {.async.} =
   var cfg = config
   if cfg.serverName.len == 0: cfg.serverName = host
 
   let engRes = newClientEngine(cfg)
-  if not engRes.isOk: return err[AsyncVaultSocket](engRes.err)
+  if not engRes.isOk: return err[AsyncTlsSocket](engRes.err)
 
   let sock = newAsyncSocket(buffered = false)
   try:
@@ -90,36 +90,36 @@ proc connectAsync*(host: string, port = 443,
   except CatchableError as e:
     sock.close()
     engRes.val.close()
-    return err[AsyncVaultSocket](veIoError, "Async TCP connect to " & host & ":" & $port & " failed: " & e.msg)
+    return err[AsyncTlsSocket](teIoError, "Async TCP connect to " & host & ":" & $port & " failed: " & e.msg)
 
-  let vs = AsyncVaultSocket(sock: sock, engine: engRes.val, closed: false)
+  let vs = AsyncTlsSocket(sock: sock, engine: engRes.val, closed: false)
   let hs = await crankHandshakeAsync(vs)
   if not hs.isOk:
     await vs.closeAsync()
-    return err[AsyncVaultSocket](hs.err)
+    return err[AsyncTlsSocket](hs.err)
   return ok(vs)
 
 proc dialAsync*(host: string, port = 443,
-                config = defaultTlsConfig()): Future[VaultResult[AsyncVaultSocket]] =
+                config = defaultTlsConfig()): Future[TlsResult[AsyncTlsSocket]] =
   connectAsync(host, port, config)
 
 proc wrapServerAsync*(sock: AsyncSocket, certPem, keyPem: string,
-                      alpnProtocols: seq[string] = @[]): Future[VaultResult[AsyncVaultSocket]] {.async.} =
+                      alpnProtocols: seq[string] = @[]): Future[TlsResult[AsyncTlsSocket]] {.async.} =
   var cfg = defaultServerConfig(certPem, keyPem)
   cfg.alpnProtocols = alpnProtocols
   let engRes = newServerEngine(cfg)
-  if not engRes.isOk: return err[AsyncVaultSocket](engRes.err)
+  if not engRes.isOk: return err[AsyncTlsSocket](engRes.err)
 
-  let vs = AsyncVaultSocket(sock: sock, engine: engRes.val, closed: false)
+  let vs = AsyncTlsSocket(sock: sock, engine: engRes.val, closed: false)
   let hs = await crankHandshakeAsync(vs)
   if not hs.isOk:
     vs.engine.close()
-    return err[AsyncVaultSocket](hs.err)
+    return err[AsyncTlsSocket](hs.err)
   return ok(vs)
 
-proc sendAsync*(vs: AsyncVaultSocket, data: string): Future[VaultResult[int]] {.async.} =
+proc sendAsync*(vs: AsyncTlsSocket, data: string): Future[TlsResult[int]] {.async.} =
   if vs == nil or vs.closed:
-    return err[int](veConnectionClosed, "Cannot send on closed AsyncVaultSocket")
+    return err[int](teConnectionClosed, "Cannot send on closed AsyncTlsSocket")
   var offset = 0
   while offset < data.len:
     if vs.engine.canWriteAppData():
@@ -131,10 +131,10 @@ proc sendAsync*(vs: AsyncVaultSocket, data: string): Future[VaultResult[int]] {.
     if not w.isOk: return err[int](w.err)
     let act = vs.engine.nextAction()
     if act == taError: return err[int](vs.engine.lastError())
-    elif act == taClosed: return err[int](veConnectionClosed, "TLS connection closed during async send")
+    elif act == taClosed: return err[int](teConnectionClosed, "TLS connection closed during async send")
   return ok(offset)
 
-proc recvAsync*(vs: AsyncVaultSocket, maxBytes = 4096): Future[VaultResult[string]] {.async.} =
+proc recvAsync*(vs: AsyncTlsSocket, maxBytes = 4096): Future[TlsResult[string]] {.async.} =
   if vs == nil or vs.closed: return ok("")
   var outBuf = newSeq[byte](max(1, maxBytes))
   while true:

@@ -16,16 +16,16 @@ jobs:
         include:
           - os: ubuntu-latest
             target: linux-amd64
-            cli_name: nimvault-linux-amd64
-            lib_name: libnimvault-linux-amd64.so
+            cli_name: nimtls-linux-amd64
+            lib_name: libnimtls-linux-amd64.so
           - os: macos-latest
             target: macos-arm64
-            cli_name: nimvault-macos-arm64
-            lib_name: libnimvault-macos-arm64.dylib
+            cli_name: nimtls-macos-arm64
+            lib_name: libnimtls-macos-arm64.dylib
           - os: windows-latest
             target: windows-amd64
-            cli_name: nimvault-windows-amd64.exe
-            lib_name: nimvault-windows-amd64.dll
+            cli_name: nimtls-windows-amd64.exe
+            lib_name: nimtls-windows-amd64.dll
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -40,8 +40,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          nim c -d:release -d:nimvaultEmbedRoots -o:dist/${{ matrix.cli_name }} src/nimvault_cli.nim
-          nim c --app:lib -d:release -d:nimvaultEmbedRoots -o:dist/${{ matrix.lib_name }} src/nimvault/cabi.nim
+          nim c -d:release -d:nimtlsEmbedRoots -o:dist/${{ matrix.cli_name }} src/nimtls_cli.nim
+          nim c --app:lib -d:release -d:nimtlsEmbedRoots -o:dist/${{ matrix.lib_name }} src/nimtls/cabi.nim
           ./dist/${{ matrix.cli_name }} version
 
       - name: Upload release assets to GitHub Release
@@ -50,5 +50,5 @@ jobs:
           TAG: ${{ github.ref_name }}
         shell: bash
         run: |
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "nimvault $TAG" --generate-notes
-          gh release upload "$TAG" dist/${{ matrix.cli_name }} dist/${{ matrix.lib_name }} include/nimvault.h --clobber
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "nimtls $TAG" --generate-notes
+          gh release upload "$TAG" dist/${{ matrix.cli_name }} dist/${{ matrix.lib_name }} include/nimtls.h --clobber

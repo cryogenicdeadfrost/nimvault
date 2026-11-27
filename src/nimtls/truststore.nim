@@ -20,20 +20,20 @@ type
     sourceKind*: TrustSourceKind
     certCount*: int
 
-when defined(nimvaultEmbedRoots):
+when defined(nimtlsEmbedRoots):
   const EmbeddedMozillaRoots* = staticRead("./vendor/cacert.pem")
 
 proc hasEmbeddedRoots*(): bool {.inline.} =
-  when defined(nimvaultEmbedRoots): true else: false
+  when defined(nimtlsEmbedRoots): true else: false
 
-proc bakedRoots*(): VaultResult[TrustBundle] =
-  when defined(nimvaultEmbedRoots):
+proc bakedRoots*(): TlsResult[TrustBundle] =
+  when defined(nimtlsEmbedRoots):
     let n = countPemCerts(EmbeddedMozillaRoots)
     if n <= 0:
       return err[TrustBundle](
-        veTrustStoreInvalid,
+        teTrustStoreInvalid,
         "Embedded Mozilla CA bundle has 0 certs",
-        likelyCause = "src/nimvault/vendor/cacert.pem is empty or broken.",
+        likelyCause = "src/nimtls/vendor/cacert.pem is empty or broken.",
         suggestion = "Re-fetch cacert.pem from https://curl.se/ca/cacert.pem."
       )
     ok(TrustBundle(
@@ -44,20 +44,20 @@ proc bakedRoots*(): VaultResult[TrustBundle] =
     ))
   else:
     err[TrustBundle](
-      veTrustStoreNotFound,
+      teTrustStoreNotFound,
       "Embedded root certificates were not compiled in",
-      likelyCause = "Built without `-d:nimvaultEmbedRoots`.",
-      suggestion = "Rebuild with `-d:nimvaultEmbedRoots` to bake in Mozilla roots (~200 KB)."
+      likelyCause = "Built without `-d:nimtlsEmbedRoots`.",
+      suggestion = "Rebuild with `-d:nimtlsEmbedRoots` to bake in Mozilla roots (~200 KB)."
     )
 
-proc loadEmbeddedTrustStore*(): VaultResult[TrustBundle] {.inline.} = bakedRoots()
+proc loadEmbeddedTrustStore*(): TlsResult[TrustBundle] {.inline.} = bakedRoots()
 
-proc snagPemFile(path: string, kind = tsExplicitFile): VaultResult[TrustBundle] =
+proc snagPemFile(path: string, kind = tsExplicitFile): TlsResult[TrustBundle] =
   if path.len == 0:
-    return err[TrustBundle](veTrustStoreInvalid, "CA bundle path is empty")
+    return err[TrustBundle](teTrustStoreInvalid, "CA bundle path is empty")
   if not fileExists(path):
     return err[TrustBundle](
-      veTrustStoreNotFound,
+      teTrustStoreNotFound,
       "CA bundle file not found: " & path,
       likelyCause = "File doesn't exist or isn't readable.",
       suggestion = "Check the path or unset SSL_CERT_FILE to use OS/embedded roots."
@@ -67,7 +67,7 @@ proc snagPemFile(path: string, kind = tsExplicitFile): VaultResult[TrustBundle] 
     let n = countPemCerts(pem)
     if n <= 0:
       return err[TrustBundle](
-        veTrustStoreInvalid,
+        teTrustStoreInvalid,
         "No PEM certificates found in: " & path,
         likelyCause = "File has no `-----BEGIN CERTIFICATE-----` blocks.",
         suggestion = "Point to a valid PEM CA bundle."
@@ -75,13 +75,13 @@ proc snagPemFile(path: string, kind = tsExplicitFile): VaultResult[TrustBundle] 
     ok(TrustBundle(pemData: pem, sourcePath: path, sourceKind: kind, certCount: n))
   except CatchableError as e:
     err[TrustBundle](
-      veTrustStoreInvalid,
+      teTrustStoreInvalid,
       "Failed reading CA bundle '" & path & "': " & e.msg,
       likelyCause = "Permissions or I/O error.",
       suggestion = "Check file permissions."
     )
 
-proc loadTrustFile*(path: string, kind = tsExplicitFile): VaultResult[TrustBundle] {.inline.} =
+proc loadTrustFile*(path: string, kind = tsExplicitFile): TlsResult[TrustBundle] {.inline.} =
   snagPemFile(path, kind)
 
 when defined(windows):
@@ -103,14 +103,14 @@ when defined(windows):
   proc certCloseStore(hCertStore: HCERTSTORE, dwFlags: uint32): int32
     {.stdcall, dynlib: "crypt32.dll", importc: "CertCloseStore".}
 
-  proc sniffSystemRoots(): VaultResult[TrustBundle] =
+  proc sniffSystemRoots(): TlsResult[TrustBundle] =
     let store = certOpenSystemStoreA(0, "ROOT")
     if store == nil:
       return err[TrustBundle](
-        veTrustStoreNotFound,
+        teTrustStoreNotFound,
         "Could not open Windows CryptoAPI ROOT store",
         likelyCause = "CryptoAPI is blocked or restricted in this sandbox.",
-        suggestion = "Compile with `-d:nimvaultEmbedRoots` or set `SSL_CERT_FILE`."
+        suggestion = "Compile with `-d:nimtlsEmbedRoots` or set `SSL_CERT_FILE`."
       )
     defer: discard certCloseStore(store, 0)
 
@@ -129,10 +129,10 @@ when defined(windows):
 
     if count == 0:
       return err[TrustBundle](
-        veTrustStoreNotFound,
+        teTrustStoreNotFound,
         "Windows CryptoAPI ROOT store returned 0 certs",
         likelyCause = "Sandboxed or stripped Windows environment.",
-        suggestion = "Compile with `-d:nimvaultEmbedRoots` or set `SSL_CERT_FILE`."
+        suggestion = "Compile with `-d:nimtlsEmbedRoots` or set `SSL_CERT_FILE`."
       )
 
     ok(TrustBundle(
@@ -143,7 +143,7 @@ when defined(windows):
     ))
 
 elif defined(macosx):
-  proc sniffSystemRoots(): VaultResult[TrustBundle] =
+  proc sniffSystemRoots(): TlsResult[TrustBundle] =
     if fileExists("/etc/ssl/cert.pem"):
       let res = snagPemFile("/etc/ssl/cert.pem", tsSystemStore)
       if res.isOk: return res
@@ -163,10 +163,10 @@ elif defined(macosx):
     except CatchableError:
       discard
     err[TrustBundle](
-      veTrustStoreNotFound,
+      teTrustStoreNotFound,
       "No macOS system CA certs found",
       likelyCause = "Neither /etc/ssl/cert.pem nor SystemRootCertificates.keychain was readable.",
-      suggestion = "Compile with `-d:nimvaultEmbedRoots` or set `SSL_CERT_FILE`."
+      suggestion = "Compile with `-d:nimtlsEmbedRoots` or set `SSL_CERT_FILE`."
     )
 
 else:
@@ -181,33 +181,33 @@ else:
     "/etc/openssl/certs/ca-certificates.crt"               # NetBSD
   ]
 
-  proc sniffSystemRoots(): VaultResult[TrustBundle] =
+  proc sniffSystemRoots(): TlsResult[TrustBundle] =
     for path in UnixBundlePaths:
       if fileExists(path):
         let res = snagPemFile(path, tsSystemStore)
         if res.isOk: return res
     err[TrustBundle](
-      veTrustStoreNotFound,
+      teTrustStoreNotFound,
       "No system CA bundle found on this host",
       likelyCause = "Minimal image (Alpine/distroless/FROM scratch) missing `ca-certificates`.",
-      suggestion = "Compile with `-d:nimvaultEmbedRoots` or set `SSL_CERT_FILE`."
+      suggestion = "Compile with `-d:nimtlsEmbedRoots` or set `SSL_CERT_FILE`."
     )
 
-proc loadSystemTrustStore*(): VaultResult[TrustBundle] {.inline.} = sniffSystemRoots()
+proc loadSystemTrustStore*(): TlsResult[TrustBundle] {.inline.} = sniffSystemRoots()
 
-proc resolveTrustStore*(explicitPath = "", allowEmbeddedFallback = true): VaultResult[TrustBundle] =
+proc resolveTrustStore*(explicitPath = "", allowEmbeddedFallback = true): TlsResult[TrustBundle] =
   # Explicit path fails loud on purpose -- silently falling back when the caller asked for a specific CA is a security footgun
   if explicitPath.len > 0:
     return snagPemFile(explicitPath, tsExplicitFile)
 
-  for envName in ["SSL_CERT_FILE", "NIMVAULT_CA_BUNDLE"]:
+  for envName in ["SSL_CERT_FILE", "NIMTLS_CA_BUNDLE"]:
     let envPath = getEnv(envName).strip()
     if envPath.len > 0:
       return snagPemFile(envPath, tsEnvVar)
 
   let osRes = sniffSystemRoots()
   if osRes.isOk:
-    when defined(nimvaultEmbedRoots):
+    when defined(nimtlsEmbedRoots):
       # OS trust stores can lag behind newer public roots (Windows lazy AutoRootCtl,
       # older macOS /etc/ssl/cert.pem, stale Linux images). When embedded roots are
       # compiled in, union OS roots (keeps corporate CAs) with the baked Mozilla set.
@@ -223,12 +223,12 @@ proc resolveTrustStore*(explicitPath = "", allowEmbeddedFallback = true): VaultR
     return osRes
 
   if allowEmbeddedFallback:
-    when defined(nimvaultEmbedRoots):
+    when defined(nimtlsEmbedRoots):
       return bakedRoots()
 
   err[TrustBundle](
-    veTrustStoreNotFound,
+    teTrustStoreNotFound,
     "No CA root certificates could be resolved (" & osRes.err.message & ")",
     likelyCause = "No SSL_CERT_FILE, no OS trust store, and no embedded roots.",
-    suggestion = "Recompile with `-d:nimvaultEmbedRoots` or set `SSL_CERT_FILE=/path/to/cacert.pem`."
+    suggestion = "Recompile with `-d:nimtlsEmbedRoots` or set `SSL_CERT_FILE=/path/to/cacert.pem`."
   )

@@ -4,10 +4,10 @@ import std/[net, nativesockets, strutils, monotimes, times, tables]
 import ./errors
 import ./engine
 
-const ClientUserAgent* = "nimvault/0.2.0"
+const ClientUserAgent* = "nimtls/0.3.0"
 
 type
-  VaultSocket* = ref object
+  TlsSocket* = ref object
     sock*: Socket
     engine*: TlsEngine
     timeoutMs*: int
@@ -19,7 +19,7 @@ type
     success*: bool
     handshakeMs*: float
     peerInfo*: PeerInfo
-    error*: VaultError
+    error*: TlsError
 
   ParsedUrl* = object
     scheme*: string
@@ -35,20 +35,20 @@ type
     finalUrl*: string
     peerInfo*: PeerInfo
 
-proc shoveRaw(sock: Socket, data: openArray[byte]): VaultResult[bool] =
+proc shoveRaw(sock: Socket, data: openArray[byte]): TlsResult[bool] =
   var sent = 0
   while sent < data.len:
     try:
       let n = sock.send(unsafeAddr data[sent], data.len - sent)
       if n <= 0:
-        return err[bool](veIoError, "Socket closed while writing TLS records")
+        return err[bool](teIoError, "Socket closed while writing TLS records")
       sent += n
     except CatchableError as e:
-      return err[bool](veIoError, "Socket write failed: " & e.msg,
+      return err[bool](teIoError, "Socket write failed: " & e.msg,
                        likelyCause = "Peer reset connection or network drop.")
   ok(true)
 
-proc flushWire(vs: VaultSocket): VaultResult[bool] =
+proc flushWire(vs: TlsSocket): TlsResult[bool] =
   var buf: array[4096, byte]
   while vs.engine.needsWrite():
     let n = vs.engine.drainEncrypted(buf)
@@ -57,7 +57,7 @@ proc flushWire(vs: VaultSocket): VaultResult[bool] =
     if not w.isOk: return w
   ok(true)
 
-proc slurpWire(vs: VaultSocket): VaultResult[int] =
+proc slurpWire(vs: TlsSocket): TlsResult[int] =
   # std/net's 4-arg recv(buf, size, timeout) loops until the entire 4KB fills, which stalls TLS handshakes.
   # selectRead + 3-arg unbuffered recv returns immediately with whatever bytes hit the kernel buffer.
   var buf: array[4096, byte]
@@ -65,7 +65,7 @@ proc slurpWire(vs: VaultSocket): VaultResult[int] =
     if vs.timeoutMs > 0:
       var fds = @[vs.sock.getFd()]
       if selectRead(fds, vs.timeoutMs) == 0:
-        return err[int](veIoError, "Socket read timed out after " & $vs.timeoutMs & "ms",
+        return err[int](teIoError, "Socket read timed out after " & $vs.timeoutMs & "ms",
                         likelyCause = "Peer went quiet or firewall ate the packets.",
                         suggestion = "Bump timeout or check host/port reachability.")
     let n = vs.sock.recv(addr buf[0], buf.len)
@@ -77,10 +77,10 @@ proc slurpWire(vs: VaultSocket): VaultResult[int] =
       fed += c
     return ok(n)
   except CatchableError as e:
-    return err[int](veIoError, "Socket read failed: " & e.msg,
+    return err[int](teIoError, "Socket read failed: " & e.msg,
                     likelyCause = "Connection reset by peer or network blip.")
 
-proc close*(vs: VaultSocket) =
+proc close*(vs: TlsSocket) =
   if vs == nil or vs.closed: return
   vs.closed = true
   try:
@@ -93,11 +93,11 @@ proc close*(vs: VaultSocket) =
     try: vs.sock.close()
     except CatchableError: discard
 
-proc peerInfo*(vs: VaultSocket): PeerInfo =
+proc peerInfo*(vs: TlsSocket): PeerInfo =
   if vs == nil: return PeerInfo()
   vs.engine.peerInfo()
 
-proc crankHandshake(vs: VaultSocket): VaultResult[bool] =
+proc crankHandshake(vs: TlsSocket): TlsResult[bool] =
   while true:
     case vs.engine.nextAction()
     of taNeedWrite:
@@ -110,7 +110,7 @@ proc crankHandshake(vs: VaultSocket): VaultResult[bool] =
         if vs.engine.rawErrorCode() != 0:
           return err[bool](vs.engine.lastError())
         return err[bool](
-          veIoError,
+          teIoError,
           "Peer closed TCP socket mid-handshake",
           likelyCause = "Server rejected the ClientHello, requires TLS 1.3 only, or isn't speaking TLS on this port.",
           suggestion = "Check port, SNI, and TLS 1.2 support."
@@ -121,15 +121,15 @@ proc crankHandshake(vs: VaultSocket): VaultResult[bool] =
       discard flushWire(vs)
       return err[bool](vs.engine.lastError())
     of taClosed:
-      return err[bool](veConnectionClosed, "TLS engine closed during handshake")
+      return err[bool](teConnectionClosed, "TLS engine closed during handshake")
 
 proc connect*(host: string, port = 443, config = defaultTlsConfig(),
-              timeoutMs = 10_000): VaultResult[VaultSocket] =
+              timeoutMs = 10_000): TlsResult[TlsSocket] =
   var cfg = config
   if cfg.serverName.len == 0: cfg.serverName = host
 
   let engRes = newClientEngine(cfg)
-  if not engRes.isOk: return err[VaultSocket](engRes.err)
+  if not engRes.isOk: return err[TlsSocket](engRes.err)
 
   let sock = newSocket(buffered = false)
   try:
@@ -137,38 +137,38 @@ proc connect*(host: string, port = 443, config = defaultTlsConfig(),
   except CatchableError as e:
     sock.close()
     engRes.val.close()
-    return err[VaultSocket](
-      veIoError,
+    return err[TlsSocket](
+      teIoError,
       "TCP connect to " & host & ":" & $port & " failed: " & e.msg,
       likelyCause = "DNS failed, host unreachable, or port refused.",
       suggestion = "Check hostname, port, and network connectivity."
     )
 
-  let vs = VaultSocket(sock: sock, engine: engRes.val, timeoutMs: timeoutMs, closed: false)
+  let vs = TlsSocket(sock: sock, engine: engRes.val, timeoutMs: timeoutMs, closed: false)
   let hs = crankHandshake(vs)
   if not hs.isOk:
     vs.close()
-    return err[VaultSocket](hs.err)
+    return err[TlsSocket](hs.err)
   ok(vs)
 
 proc dial*(host: string, port = 443, config = defaultTlsConfig(),
-           timeoutMs = 10_000): VaultResult[VaultSocket] {.inline.} =
+           timeoutMs = 10_000): TlsResult[TlsSocket] {.inline.} =
   connect(host, port, config, timeoutMs)
 
 proc wrapServer*(sock: Socket, certPem, keyPem: string,
                  alpnProtocols: seq[string] = @[],
-                 timeoutMs = 10_000): VaultResult[VaultSocket] =
+                 timeoutMs = 10_000): TlsResult[TlsSocket] =
   # Wraps an already-accepted unbuffered std/net Socket and completes the server TLS handshake.
   var cfg = defaultServerConfig(certPem, keyPem)
   cfg.alpnProtocols = alpnProtocols
   let engRes = newServerEngine(cfg)
-  if not engRes.isOk: return err[VaultSocket](engRes.err)
+  if not engRes.isOk: return err[TlsSocket](engRes.err)
 
-  let vs = VaultSocket(sock: sock, engine: engRes.val, timeoutMs: timeoutMs, closed: false)
+  let vs = TlsSocket(sock: sock, engine: engRes.val, timeoutMs: timeoutMs, closed: false)
   let hs = crankHandshake(vs)
   if not hs.isOk:
     vs.engine.close()
-    return err[VaultSocket](hs.err)
+    return err[TlsSocket](hs.err)
   ok(vs)
 
 proc probe*(host: string, port = 443, config = defaultTlsConfig(),
@@ -190,8 +190,8 @@ proc probe*(host: string, port = 443, config = defaultTlsConfig(),
   except CatchableError as e:
     sock.close()
     engRes.val.close()
-    result.error = VaultError(
-      kind: veIoError,
+    result.error = TlsError(
+      kind: teIoError,
       alertCode: -1,
       message: "TCP connect to " & host & ":" & $port & " failed: " & e.msg,
       likelyCause: "DNS failed, host unreachable, or port refused.",
@@ -199,7 +199,7 @@ proc probe*(host: string, port = 443, config = defaultTlsConfig(),
     )
     return result
 
-  let vs = VaultSocket(sock: sock, engine: engRes.val, timeoutMs: timeoutMs, closed: false)
+  let vs = TlsSocket(sock: sock, engine: engRes.val, timeoutMs: timeoutMs, closed: false)
   let hs = crankHandshake(vs)
   result.handshakeMs = inMicroseconds(getMonoTime() - t0).float / 1000.0
   result.peerInfo = vs.engine.peerInfo()
@@ -213,9 +213,9 @@ proc poke*(host: string, port = 443, config = defaultTlsConfig(),
            timeoutMs = 10_000): ProbeReport {.inline.} =
   probe(host, port, config, timeoutMs)
 
-proc send*(vs: VaultSocket, data: openArray[byte]): VaultResult[int] =
+proc send*(vs: TlsSocket, data: openArray[byte]): TlsResult[int] =
   if vs == nil or vs.closed:
-    return err[int](veConnectionClosed, "Cannot send on closed VaultSocket")
+    return err[int](teConnectionClosed, "Cannot send on closed TlsSocket")
   var offset = 0
   while offset < data.len:
     if vs.engine.canWriteAppData():
@@ -227,14 +227,14 @@ proc send*(vs: VaultSocket, data: openArray[byte]): VaultResult[int] =
     if not w.isOk: return err[int](w.err)
     let act = vs.engine.nextAction()
     if act == taError: return err[int](vs.engine.lastError())
-    elif act == taClosed: return err[int](veConnectionClosed, "TLS connection closed during send")
+    elif act == taClosed: return err[int](teConnectionClosed, "TLS connection closed during send")
   ok(offset)
 
-proc send*(vs: VaultSocket, text: string): VaultResult[int] =
+proc send*(vs: TlsSocket, text: string): TlsResult[int] =
   if text.len == 0: return ok(0)
   vs.send(text.toOpenArrayByte(0, text.high))
 
-proc recv*(vs: VaultSocket, maxBytes = 4096): VaultResult[string] =
+proc recv*(vs: TlsSocket, maxBytes = 4096): TlsResult[string] =
   if vs == nil or vs.closed: return ok("")
   var outBuf = newSeq[byte](max(1, maxBytes))
   while true:
@@ -260,10 +260,10 @@ proc recv*(vs: VaultSocket, maxBytes = 4096): VaultResult[string] =
     of taClosed: return ok("")
     of taError: return err[string](vs.engine.lastError())
 
-proc crackUrl*(rawUrl: string): VaultResult[ParsedUrl] =
+proc crackUrl*(rawUrl: string): TlsResult[ParsedUrl] =
   var s = rawUrl.strip()
   if s.len == 0:
-    return err[ParsedUrl](veInvalidConfig, "URL cannot be empty")
+    return err[ParsedUrl](teInvalidConfig, "URL cannot be empty")
   var scheme = "https"
   let schemeIdx = s.find("://")
   if schemeIdx >= 0:
@@ -271,8 +271,8 @@ proc crackUrl*(rawUrl: string): VaultResult[ParsedUrl] =
     s = s[schemeIdx + 3 .. ^1]
   if scheme != "https":
     return err[ParsedUrl](
-      veInvalidConfig,
-      "Unsupported URL scheme '" & scheme & "' (nimvault fetch speaks https://)",
+      teInvalidConfig,
+      "Unsupported URL scheme '" & scheme & "' (nimtls fetch speaks https://)",
       suggestion = "Use an https:// URL."
     )
 
@@ -291,14 +291,14 @@ proc crackUrl*(rawUrl: string): VaultResult[ParsedUrl] =
       port = parseInt(hostPort[colonIdx + 1 .. ^1])
       host = hostPort[0 ..< colonIdx]
     except ValueError:
-      return err[ParsedUrl](veInvalidConfig, "Invalid port in URL: " & rawUrl)
+      return err[ParsedUrl](teInvalidConfig, "Invalid port in URL: " & rawUrl)
 
   if host.len == 0 or port <= 0 or port > 65535:
-    return err[ParsedUrl](veInvalidConfig, "Invalid host or port in URL: " & rawUrl)
+    return err[ParsedUrl](teInvalidConfig, "Invalid host or port in URL: " & rawUrl)
 
   ok(ParsedUrl(scheme: scheme, host: host, port: port, path: path))
 
-proc parseHttpsUrl*(rawUrl: string): VaultResult[ParsedUrl] {.inline.} = crackUrl(rawUrl)
+proc parseHttpsUrl*(rawUrl: string): TlsResult[ParsedUrl] {.inline.} = crackUrl(rawUrl)
 
 proc dechunkBody(raw: string): string =
   # RFC 9112 chunked transfer decoding: <hex-len>\r\n<bytes>\r\n ... 0\r\n\r\n
@@ -327,7 +327,7 @@ proc dechunkBody(raw: string): string =
 proc httpRequest*(meth: string, host: string, path = "/", port = 443,
                   headers: openArray[(string, string)] = @[],
                   body = "", config = defaultTlsConfig(),
-                  timeoutMs = 10_000): VaultResult[HttpResponse] =
+                  timeoutMs = 10_000): TlsResult[HttpResponse] =
   var cfg = config
   if cfg.serverName.len == 0: cfg.serverName = host
   if cfg.alpnProtocols.len == 0: cfg.alpnProtocols = @["http/1.1"]
@@ -394,13 +394,13 @@ proc httpRequest*(meth: string, host: string, path = "/", port = 443,
   ok(resp)
 
 proc httpGet*(host: string, path = "/", port = 443,
-              config = defaultTlsConfig(), timeoutMs = 10_000): VaultResult[HttpResponse] =
+              config = defaultTlsConfig(), timeoutMs = 10_000): TlsResult[HttpResponse] =
   httpRequest("GET", host, path, port, @[], "", config, timeoutMs)
 
 proc fetch*(url: string, meth = "GET",
             headers: openArray[(string, string)] = @[],
             body = "", config = defaultTlsConfig(),
-            timeoutMs = 10_000, maxRedirects = 5): VaultResult[HttpResponse] =
+            timeoutMs = 10_000, maxRedirects = 5): TlsResult[HttpResponse] =
   # Standalone HTTPS URL fetch with chunked decoding and redirect following.
   var curUrl = url
   var curMeth = meth.toUpperAscii()
@@ -434,11 +434,11 @@ proc fetch*(url: string, meth = "GET",
       continue
     return ok(resp)
 
-  err[HttpResponse](veIoError, "Exceeded maximum redirect limit (" & $maxRedirects & ")")
+  err[HttpResponse](teIoError, "Exceeded maximum redirect limit (" & $maxRedirects & ")")
 
 proc httpPost*(url: string, body: string, contentType = "application/json",
                headers: openArray[(string, string)] = @[],
-               config = defaultTlsConfig(), timeoutMs = 10_000): VaultResult[HttpResponse] =
+               config = defaultTlsConfig(), timeoutMs = 10_000): TlsResult[HttpResponse] =
   var hdrs: seq[(string, string)] = @[("Content-Type", contentType)]
   for h in headers: hdrs.add(h)
   fetch(url, meth = "POST", headers = hdrs, body = body, config = config, timeoutMs = timeoutMs)
