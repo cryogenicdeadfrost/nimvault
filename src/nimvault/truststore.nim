@@ -207,10 +207,10 @@ proc resolveTrustStore*(explicitPath = "", allowEmbeddedFallback = true): VaultR
 
   let osRes = sniffSystemRoots()
   if osRes.isOk:
-    when defined(windows) and defined(nimvaultEmbedRoots):
-      # Windows CryptoAPI lazily fetches roots on-demand via Schannel/Windows Update,
-      # so a fresh box can miss newer roots like SSL.com ECC. Union OS roots (corp CAs)
-      # with the baked Mozilla bundle when embedded roots are enabled.
+    when defined(nimvaultEmbedRoots):
+      # OS trust stores can lag behind newer public roots (Windows lazy AutoRootCtl,
+      # older macOS /etc/ssl/cert.pem, stale Linux images). When embedded roots are
+      # compiled in, union OS roots (keeps corporate CAs) with the baked Mozilla set.
       if allowEmbeddedFallback:
         let emb = bakedRoots()
         if emb.isOk:
