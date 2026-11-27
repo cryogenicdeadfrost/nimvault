@@ -1,6 +1,6 @@
-## nimvault CLI: `trust`, `probe`, `keygen`, and `version` commands.
+# CLI frontend: trust, probe, fetch, keygen, version.
 
-import std/[strutils, json]
+import std/[strutils, json, tables]
 import ./errors
 import ./truststore
 import ./x509
@@ -8,44 +8,63 @@ import ./engine
 import ./client
 import ./keygen
 
-const NimvaultVersion* = "0.1.0"
+const NimvaultVersion* = "0.2.0"
 
 proc printUsage() =
-  echo """nimvault """ & NimvaultVersion & """ — Zero-dependency static TLS & trust diagnostics (BearSSL 0.6)
+  echo """nimvault """ & NimvaultVersion & """ (BearSSL 0.6 static TLS, zero OpenSSL)
 
 Usage:
-  nimvault trust   [options]             Inspect tiered CA trust store resolution
-  nimvault probe   <host[:port]> [opts]  Connect over static TLS & inspect peer/errors
-  nimvault keygen  [options]             Generate ECDSA P-256 key + self-signed X.509 v3 cert
-  nimvault version                       Show version and compile-time backend info
+  nimvault trust   [options]             Show which CA trust store won
+  nimvault probe   <host[:port]> [opts]  Run a TLS handshake and inspect cert / errors
+  nimvault fetch   <https://url> [opts]  Minimal HTTPS GET/HEAD without curl or OpenSSL
+  nimvault keygen  [options]             Mint an ECDSA P-256 key + self-signed X.509 v3 cert
+  nimvault version                       Show build info
 
 Trust options:
-  --ca-file <path>      Validate a specific PEM CA bundle file
-  --no-embedded         Disable embedded Mozilla roots fallback
-  --json                Output machine-readable JSON
+  --ca-file <path>      Validate a specific PEM CA bundle
+  --no-embedded         Don't fall back to compiled-in Mozilla roots
+  --json                JSON output
 
 Probe options:
   --port <num>          Target port (default: 443)
-  --sni <hostname>      Override SNI / verification hostname
-  --ca-file <path>      Use a custom PEM CA bundle
-  --alpn <proto>        Offer ALPN protocol (repeatable, e.g. --alpn http/1.1)
-  --timeout <ms>        Socket timeout in milliseconds (default: 10000)
-  --insecure            Skip X.509 chain verification (inspection/debugging only)
-  --json                Output machine-readable JSON
+  --sni <hostname>      Override SNI / cert hostname check
+  --ca-file <path>      Custom PEM CA bundle
+  --alpn <proto>        Offer ALPN protocol (repeatable)
+  --timeout <ms>        Socket timeout in ms (default: 10000)
+  --insecure            Skip cert verification (debugging only)
+  --json                JSON output
+
+Fetch options:
+  --head                Send HEAD instead of GET
+  --headers             Print response status + headers before body
+  --ca-file <path>      Custom PEM CA bundle
+  --timeout <ms>        Socket timeout in ms (default: 10000)
+  --insecure            Skip cert verification
 
 Keygen options:
   --cn <name>           Common Name (default: localhost)
-  --org <name>          Organization name (default: nimvault-dev)
-  --san <dns>           Subject Alternative Name DNS entry (repeatable)
-  --days <num>          Validity duration in days (default: 365)
-  --key-out <path>      Write PKCS#8 private key PEM to file
-  --cert-out <path>     Write X.509 certificate PEM to file"""
+  --org <name>          Organization (default: nimvault-dev)
+  --san <dns>           SAN DNS entry (repeatable)
+  --days <num>          Validity in days (default: 365)
+  --key-out <path>      Write PKCS#8 private key PEM
+  --cert-out <path>     Write X.509 cert PEM"""
+
+proc tryFlagInt(flag, raw: string, dest: var int): bool =
+  try:
+    dest = parseInt(raw)
+    if dest <= 0:
+      stderr.writeLine("Error: ", flag, " must be > 0 (got '", raw, "')")
+      return false
+    true
+  except ValueError:
+    stderr.writeLine("Error: ", flag, " expects an integer (got '", raw, "')")
+    false
 
 proc cmdVersion(): int =
   echo "nimvault ", NimvaultVersion
-  echo "  TLS Backend:     BearSSL 0.6 (statically vendored, zero OpenSSL)"
-  echo "  TLS Versions:    TLS 1.0 - TLS 1.2 (AEAD: AES-GCM, ChaCha20-Poly1305)"
-  echo "  Embedded Roots:  ", (if hasEmbeddedRoots(): "enabled (Mozilla CA bundle compiled in)" else: "disabled (compile with -d:nimvaultEmbedRoots)")
+  echo "  TLS Backend:     BearSSL 0.6 (static, zero OpenSSL)"
+  echo "  TLS Versions:    TLS 1.0 - TLS 1.2 (AES-GCM, ChaCha20-Poly1305)"
+  echo "  Embedded Roots:  ", (if hasEmbeddedRoots(): "enabled (Mozilla bundle baked in)" else: "disabled (pass -d:nimvaultEmbedRoots)")
   0
 
 proc cmdTrust(args: seq[string]): int =
@@ -57,18 +76,11 @@ proc cmdTrust(args: seq[string]): int =
   while i < args.len:
     case args[i]
     of "--ca-file":
-      if i + 1 >= args.len:
-        stderr.writeLine("Error: --ca-file requires a path")
-        return 2
-      inc i
-      caFile = args[i]
-    of "--no-embedded":
-      allowEmbedded = false
-    of "--json":
-      jsonOut = true
-    of "-h", "--help":
-      printUsage()
-      return 0
+      if i + 1 >= args.len: stderr.writeLine("Error: --ca-file needs a path"); return 2
+      inc i; caFile = args[i]
+    of "--no-embedded": allowEmbedded = false
+    of "--json": jsonOut = true
+    of "-h", "--help": printUsage(); return 0
     else:
       stderr.writeLine("Unknown option for `trust`: ", args[i])
       return 2
@@ -77,7 +89,7 @@ proc cmdTrust(args: seq[string]): int =
   let res = resolveTrustStore(explicitPath = caFile, allowEmbeddedFallback = allowEmbedded)
   if not res.isOk:
     if jsonOut:
-      let j = %*{
+      echo (%*{
         "ok": false,
         "embeddedRootsAvailable": hasEmbeddedRoots(),
         "error": {
@@ -86,25 +98,23 @@ proc cmdTrust(args: seq[string]): int =
           "likelyCause": res.err.likelyCause,
           "suggestion": res.err.suggestion
         }
-      }
-      echo j.pretty()
+      }).pretty()
     else:
-      stderr.writeLine(formatDiagnostic(res.err))
+      stderr.writeLine(prettyErr(res.err))
     return 1
 
   let b = res.val
   if jsonOut:
-    let j = %*{
+    echo (%*{
       "ok": true,
       "sourceKind": $b.sourceKind,
       "sourcePath": b.sourcePath,
       "certCount": b.certCount,
       "pemBytes": b.pemData.len,
       "embeddedRootsAvailable": hasEmbeddedRoots()
-    }
-    echo j.pretty()
+    }).pretty()
   else:
-    echo "Trust Store Resolution: OK"
+    echo "Trust Store: OK"
     echo "  Source Kind:     ", b.sourceKind
     echo "  Source Path:     ", b.sourcePath
     echo "  Certificates:    ", b.certCount
@@ -112,21 +122,16 @@ proc cmdTrust(args: seq[string]): int =
     echo "  Embedded Roots:  ", (if hasEmbeddedRoots(): "compiled in" else: "not compiled in")
   0
 
-proc parseHostPort(target: string, defaultPort: int): tuple[host: string, port: int] =
+proc splitHostPort(target: string, defaultPort: int): tuple[host: string, port: int] =
   var clean = target.strip()
-  if clean.startsWith("https://"):
-    clean = clean[8 .. ^1]
-  elif clean.startsWith("http://"):
-    clean = clean[7 .. ^1]
+  if clean.startsWith("https://"): clean = clean[8 .. ^1]
+  elif clean.startsWith("http://"): clean = clean[7 .. ^1]
   let slash = clean.find('/')
-  if slash >= 0:
-    clean = clean[0 ..< slash]
+  if slash >= 0: clean = clean[0 ..< slash]
   let colon = clean.rfind(':')
   if colon > 0 and not clean.endsWith("]"):
-    try:
-      return (clean[0 ..< colon], parseInt(clean[colon + 1 .. ^1]))
-    except ValueError:
-      discard
+    try: return (clean[0 ..< colon], parseInt(clean[colon + 1 .. ^1]))
+    except ValueError: discard
   (clean, defaultPort)
 
 proc cmdProbe(args: seq[string]): int =
@@ -143,68 +148,43 @@ proc cmdProbe(args: seq[string]): int =
   while i < args.len:
     case args[i]
     of "--port":
-      if i + 1 >= args.len:
-        stderr.writeLine("Error: --port requires a number")
-        return 2
+      if i + 1 >= args.len: stderr.writeLine("Error: --port needs a number"); return 2
       inc i
-      portOverride = parseInt(args[i])
+      if not tryFlagInt("--port", args[i], portOverride): return 2
     of "--sni":
-      if i + 1 >= args.len:
-        stderr.writeLine("Error: --sni requires a hostname")
-        return 2
-      inc i
-      sni = args[i]
+      if i + 1 >= args.len: stderr.writeLine("Error: --sni needs a hostname"); return 2
+      inc i; sni = args[i]
     of "--ca-file":
-      if i + 1 >= args.len:
-        stderr.writeLine("Error: --ca-file requires a path")
-        return 2
-      inc i
-      caFile = args[i]
+      if i + 1 >= args.len: stderr.writeLine("Error: --ca-file needs a path"); return 2
+      inc i; caFile = args[i]
     of "--alpn":
-      if i + 1 >= args.len:
-        stderr.writeLine("Error: --alpn requires a protocol name")
-        return 2
-      inc i
-      alpn.add(args[i])
+      if i + 1 >= args.len: stderr.writeLine("Error: --alpn needs a protocol"); return 2
+      inc i; alpn.add(args[i])
     of "--timeout":
-      if i + 1 >= args.len:
-        stderr.writeLine("Error: --timeout requires milliseconds")
-        return 2
+      if i + 1 >= args.len: stderr.writeLine("Error: --timeout needs milliseconds"); return 2
       inc i
-      timeoutMs = parseInt(args[i])
-    of "--insecure":
-      insecure = true
-    of "--json":
-      jsonOut = true
-    of "-h", "--help":
-      printUsage()
-      return 0
+      if not tryFlagInt("--timeout", args[i], timeoutMs): return 2
+    of "--insecure": insecure = true
+    of "--json": jsonOut = true
+    of "-h", "--help": printUsage(); return 0
     else:
       if args[i].startsWith("-"):
-        stderr.writeLine("Unknown option for `probe`: ", args[i])
-        return 2
-      if target.len == 0:
-        target = args[i]
-      else:
-        stderr.writeLine("Unexpected extra argument: ", args[i])
-        return 2
+        stderr.writeLine("Unknown option for `probe`: ", args[i]); return 2
+      if target.len == 0: target = args[i]
+      else: stderr.writeLine("Unexpected argument: ", args[i]); return 2
     inc i
 
   if target.len == 0:
     stderr.writeLine("Usage: nimvault probe <host[:port]> [options]")
     return 2
 
-  var (host, port) = parseHostPort(target, 443)
-  if portOverride > 0:
-    port = portOverride
+  var (host, port) = splitHostPort(target, 443)
+  if portOverride > 0: port = portOverride
 
   var cfg = defaultTlsConfig(if sni.len > 0: sni else: host)
   cfg.caBundlePath = caFile
   cfg.insecureSkipVerify = insecure
-  if alpn.len > 0:
-    cfg.alpnProtocols = alpn
-  else:
-    cfg.alpnProtocols = @["http/1.1"]
+  cfg.alpnProtocols = if alpn.len > 0: alpn else: @["http/1.1"]
 
   let rep = probe(host, port, cfg, timeoutMs)
 
@@ -213,33 +193,22 @@ proc cmdProbe(args: seq[string]): int =
     if rep.peerInfo.hasPeerCert:
       let c = rep.peerInfo.peerCert
       certObj = %*{
-        "version": c.version,
-        "subject": c.subject,
-        "subjectCN": c.subjectCN,
-        "issuer": c.issuer,
-        "issuerCN": c.issuerCN,
-        "notBefore": c.notBefore,
-        "notAfter": c.notAfter,
-        "sanDnsNames": c.sanDnsNames,
-        "sanIps": c.sanIps,
-        "keyAlgorithm": c.keyAlgorithm,
-        "sigAlgorithm": c.sigAlgorithm,
+        "version": c.version, "subject": c.subject, "subjectCN": c.subjectCN,
+        "issuer": c.issuer, "issuerCN": c.issuerCN,
+        "notBefore": c.notBefore, "notAfter": c.notAfter,
+        "sanDnsNames": c.sanDnsNames, "sanIps": c.sanIps,
+        "keyAlgorithm": c.keyAlgorithm, "sigAlgorithm": c.sigAlgorithm,
         "sha256Fingerprint": c.sha256Fingerprint
       }
     var errObj = newJNull()
     if not rep.success:
       errObj = %*{
-        "kind": $rep.error.kind,
-        "code": rep.error.code,
-        "alertCode": rep.error.alertCode,
-        "message": rep.error.message,
-        "likelyCause": rep.error.likelyCause,
+        "kind": $rep.error.kind, "code": rep.error.code, "alertCode": rep.error.alertCode,
+        "message": rep.error.message, "likelyCause": rep.error.likelyCause,
         "suggestion": rep.error.suggestion
       }
-    let j = %*{
-      "host": rep.host,
-      "port": rep.port,
-      "success": rep.success,
+    echo (%*{
+      "host": rep.host, "port": rep.port, "success": rep.success,
       "handshakeMs": rep.handshakeMs,
       "protocolVersion": rep.peerInfo.protocolVersion,
       "cipherSuite": rep.peerInfo.cipherSuite,
@@ -250,12 +219,11 @@ proc cmdProbe(args: seq[string]): int =
       "trustAnchorCount": rep.peerInfo.trustAnchorCount,
       "peerCertificate": certObj,
       "error": errObj
-    }
-    echo j.pretty()
+    }).pretty()
     return if rep.success: 0 else: 1
 
   echo "TLS Probe: ", rep.host, ":", rep.port
-  echo "  Status:          ", (if rep.success: "OK (Handshake succeeded)" else: "FAILED")
+  echo "  Status:          ", (if rep.success: "OK" else: "FAILED")
   echo "  Handshake Time:  ", formatFloat(rep.handshakeMs, ffDecimal, 2), " ms"
   echo "  Protocol:        ", rep.peerInfo.protocolVersion
   echo "  Cipher Suite:    ", rep.peerInfo.cipherSuite
@@ -273,14 +241,65 @@ proc cmdProbe(args: seq[string]): int =
     echo "    Valid From:    ", c.notBefore
     echo "    Valid Until:   ", c.notAfter
     echo "    Key / Sig:     ", c.keyAlgorithm, " / ", c.sigAlgorithm
-    if c.sanDnsNames.len > 0:
-      echo "    SAN DNS:       ", c.sanDnsNames.join(", ")
+    if c.sanDnsNames.len > 0: echo "    SAN DNS:       ", c.sanDnsNames.join(", ")
     echo "    SHA-256:       ", c.sha256Fingerprint
 
   if not rep.success:
     echo ""
-    stderr.writeLine(formatDiagnostic(rep.error))
+    stderr.writeLine(prettyErr(rep.error))
     return 1
+  0
+
+proc cmdFetch(args: seq[string]): int =
+  var url = ""
+  var meth = "GET"
+  var showHeaders = false
+  var caFile = ""
+  var timeoutMs = 10_000
+  var insecure = false
+
+  var i = 0
+  while i < args.len:
+    case args[i]
+    of "--head": meth = "HEAD"; showHeaders = true
+    of "--headers": showHeaders = true
+    of "--ca-file":
+      if i + 1 >= args.len: stderr.writeLine("Error: --ca-file needs a path"); return 2
+      inc i; caFile = args[i]
+    of "--timeout":
+      if i + 1 >= args.len: stderr.writeLine("Error: --timeout needs ms"); return 2
+      inc i
+      if not tryFlagInt("--timeout", args[i], timeoutMs): return 2
+    of "--insecure": insecure = true
+    of "-h", "--help": printUsage(); return 0
+    else:
+      if args[i].startsWith("-"):
+        stderr.writeLine("Unknown option for `fetch`: ", args[i]); return 2
+      if url.len == 0: url = args[i]
+      else: stderr.writeLine("Unexpected argument: ", args[i]); return 2
+    inc i
+
+  if url.len == 0:
+    stderr.writeLine("Usage: nimvault fetch <https://url> [options]")
+    return 2
+
+  var cfg = defaultTlsConfig()
+  cfg.caBundlePath = caFile
+  cfg.insecureSkipVerify = insecure
+
+  let res = fetch(url, meth = meth, config = cfg, timeoutMs = timeoutMs)
+  if not res.isOk:
+    stderr.writeLine(prettyErr(res.err))
+    return 1
+
+  let resp = res.val
+  if showHeaders:
+    echo resp.statusLine
+    for k, v in resp.headers:
+      echo k, ": ", v
+    echo ""
+  if resp.body.len > 0:
+    stdout.write(resp.body)
   0
 
 proc cmdKeygen(args: seq[string]): int =
@@ -293,55 +312,34 @@ proc cmdKeygen(args: seq[string]): int =
   while i < args.len:
     case args[i]
     of "--cn":
-      if i + 1 >= args.len:
-        stderr.writeLine("Error: --cn requires a value")
-        return 2
-      inc i
-      opts.commonName = args[i]
+      if i + 1 >= args.len: stderr.writeLine("Error: --cn needs a value"); return 2
+      inc i; opts.commonName = args[i]
     of "--org":
-      if i + 1 >= args.len:
-        stderr.writeLine("Error: --org requires a value")
-        return 2
-      inc i
-      opts.organization = args[i]
+      if i + 1 >= args.len: stderr.writeLine("Error: --org needs a value"); return 2
+      inc i; opts.organization = args[i]
     of "--san":
-      if i + 1 >= args.len:
-        stderr.writeLine("Error: --san requires a DNS name")
-        return 2
-      inc i
-      opts.sanDnsNames.add(args[i])
+      if i + 1 >= args.len: stderr.writeLine("Error: --san needs a DNS name"); return 2
+      inc i; opts.sanDnsNames.add(args[i])
     of "--days":
-      if i + 1 >= args.len:
-        stderr.writeLine("Error: --days requires a number")
-        return 2
+      if i + 1 >= args.len: stderr.writeLine("Error: --days needs a number"); return 2
       inc i
-      opts.validDays = parseInt(args[i])
+      if not tryFlagInt("--days", args[i], opts.validDays): return 2
     of "--key-out":
-      if i + 1 >= args.len:
-        stderr.writeLine("Error: --key-out requires a file path")
-        return 2
-      inc i
-      keyOut = args[i]
+      if i + 1 >= args.len: stderr.writeLine("Error: --key-out needs a path"); return 2
+      inc i; keyOut = args[i]
     of "--cert-out":
-      if i + 1 >= args.len:
-        stderr.writeLine("Error: --cert-out requires a file path")
-        return 2
-      inc i
-      certOut = args[i]
-    of "-h", "--help":
-      printUsage()
-      return 0
+      if i + 1 >= args.len: stderr.writeLine("Error: --cert-out needs a path"); return 2
+      inc i; certOut = args[i]
+    of "-h", "--help": printUsage(); return 0
     else:
-      stderr.writeLine("Unknown option for `keygen`: ", args[i])
-      return 2
+      stderr.writeLine("Unknown option for `keygen`: ", args[i]); return 2
     inc i
 
-  if opts.sanDnsNames.len == 0:
-    opts.sanDnsNames = @[opts.commonName]
+  if opts.sanDnsNames.len == 0: opts.sanDnsNames = @[opts.commonName]
 
-  let res = generateSelfSignedEcP256(opts)
+  let res = mintSelfSigned(opts)
   if not res.isOk:
-    stderr.writeLine(formatDiagnostic(res.err))
+    stderr.writeLine(prettyErr(res.err))
     return 1
 
   let b = res.val
@@ -369,11 +367,10 @@ proc runCli*(args: seq[string]): int =
   case args[0]
   of "trust": cmdTrust(args[1 .. ^1])
   of "probe": cmdProbe(args[1 .. ^1])
+  of "fetch": cmdFetch(args[1 .. ^1])
   of "keygen": cmdKeygen(args[1 .. ^1])
   of "version", "--version", "-v": cmdVersion()
-  of "help", "--help", "-h":
-    printUsage()
-    0
+  of "help", "--help", "-h": printUsage(); 0
   else:
     stderr.writeLine("Unknown command: ", args[0])
     printUsage()

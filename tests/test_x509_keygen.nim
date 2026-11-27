@@ -1,7 +1,7 @@
 import std/[unittest, os, strutils]
 import ../src/nimvault/[x509, keygen]
 
-const vendorCaPath = currentSourcePath.parentDir.parentDir / "vendor" / "cacert.pem"
+const vendorCaPath = currentSourcePath.parentDir.parentDir / "src" / "nimvault" / "vendor" / "cacert.pem"
 
 suite "X.509 ASN.1 Parser & ECDSA P-256 Keygen":
   test "Generate self-signed ECDSA P-256 keypair and X.509 v3 certificate":

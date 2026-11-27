@@ -1,7 +1,7 @@
 import std/[unittest, os]
 import ../src/nimvault/[errors, truststore]
 
-const vendorCaPath = currentSourcePath.parentDir.parentDir / "vendor" / "cacert.pem"
+const vendorCaPath = currentSourcePath.parentDir.parentDir / "src" / "nimvault" / "vendor" / "cacert.pem"
 
 suite "Tiered Trust Store Resolution":
   test "Explicit CA bundle file loads Mozilla cacert.pem":

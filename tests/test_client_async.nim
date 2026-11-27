@@ -142,7 +142,10 @@ suite "Sync & Async TCP TLS Adapters (Localhost Server)":
             copyMem(addr s[0], addr appBuf[0], n)
             reqAccum.add(s)
           if "\r\n\r\n" in reqAccum:
-            let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nhello-from-nimvault-tls"
+            let resp = if "/chunked" in reqAccum:
+              "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n7\r\n-chunks\r\n0\r\n\r\n"
+            else:
+              "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nhello-from-nimvault-tls"
             var sent = 0
             while sent < resp.len:
               let w = srv.writePlaintext(resp.toOpenArrayByte(sent, resp.high))
@@ -165,7 +168,7 @@ suite "Sync & Async TCP TLS Adapters (Localhost Server)":
       let port = int(listener.getLocalAddr()[1])
       args.chan[].send(port)
       defer: listener.close()
-      for _ in 0 ..< 2: # handle probe + httpGet
+      for _ in 0 ..< 3: # probe + httpGet + chunked fetch
         var peer: Socket
         listener.accept(peer)
         serveSyncPeer(peer, args.certPem, args.keyPem)
@@ -178,18 +181,55 @@ suite "Sync & Async TCP TLS Adapters (Localhost Server)":
     var cfg = defaultTlsConfig("localhost")
     cfg.caPemOverride = bundle.certificatePem
 
-    # 1. Test probe()
+    # 1. probe()
     let rep = probe("127.0.0.1", port, cfg, timeoutMs = 5000)
     doAssert rep.success, "probe failed: " & formatDiagnostic(rep.error)
     check rep.peerInfo.verified
     check rep.peerInfo.protocolVersion == "TLS 1.2"
     check rep.peerInfo.peerCert.subjectCN == "localhost"
 
-    # 2. Test httpGet()
+    # 2. httpGet()
     let httpRes = httpGet("127.0.0.1", "/status", port, cfg, timeoutMs = 5000)
     doAssert httpRes.isOk, "httpGet failed: " & formatDiagnostic(httpRes.err)
     check httpRes.val.statusCode == 200
     check httpRes.val.body == "hello-from-nimvault-tls"
     check httpRes.val.peerInfo.verified
 
+    # 3. fetch() with Transfer-Encoding: chunked
+    let chunkedRes = fetch("https://127.0.0.1:" & $port & "/chunked", config = cfg, timeoutMs = 5000)
+    doAssert chunkedRes.isOk, "fetch chunked failed: " & formatDiagnostic(chunkedRes.err)
+    check chunkedRes.val.statusCode == 200
+    check chunkedRes.val.body == "hello-chunks"
+
     joinThread(thr)
+
+  test "wrapServerAsync makes a 10-line async TLS echo server":
+    proc runEcho() {.async.} =
+      let listener = newAsyncSocket(buffered = false)
+      listener.setSockOpt(OptReuseAddr, true)
+      listener.bindAddr(Port(0), "127.0.0.1")
+      listener.listen()
+      let port = int(listener.getLocalAddr()[1])
+      defer: listener.close()
+
+      let srvFut = (proc() {.async.} =
+        let rawPeer = await listener.accept()
+        let tlsPeerRes = await wrapServerAsync(rawPeer, bundle.certificatePem, bundle.privateKeyPem)
+        check tlsPeerRes.isOk
+        let tlsPeer = tlsPeerRes.val
+        let req = await tlsPeer.recvAsync(1024)
+        check req.isOk and req.val == "yo"
+        discard await tlsPeer.sendAsync("sup")
+        await tlsPeer.closeAsync()
+      )()
+
+      var cfg = defaultTlsConfig("localhost")
+      cfg.caPemOverride = bundle.certificatePem
+      let cli = (await dialAsync("127.0.0.1", port, cfg)).get()
+      discard await cli.sendAsync("yo")
+      let reply = await cli.recvAsync(1024)
+      check reply.isOk and reply.val == "sup"
+      await cli.closeAsync()
+      await srvFut
+
+    waitFor runEcho()
