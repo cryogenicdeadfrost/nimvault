@@ -1,7 +1,7 @@
 # nimtls
 
 nimtls is a small, self-contained TLS library and CLI for Nim that takes the pain out of shipping HTTPS apps. Instead of depending on system OpenSSL libraries that break across machines or Docker containers, it compiles BearSSL straight into your binary with a normal nim c. It automatically loads your OS root certificates and can bake Mozilla's CA bundle into the executable so minimal containers never crash with missing cert errors. Under the hood, one decoupled Sans-I/O engine powers sync sockets, async code, HTTPS requests, TLS servers, a C-ABI, and plain-English diagnostics whenever a handshake fails.
----
+
 
 ## How it works
 
