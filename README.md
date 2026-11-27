@@ -1,161 +1,134 @@
 # nimvault
 
-Static TLS, OS/embedded CA root resolution, a Sans-I/O state machine, and readable TLS errors for Nim. No `-d:ssl`, no OpenSSL, no `libssl.dll` chasing you into prod.
+Static TLS, CA trust store discovery, a Sans-I/O state machine, HTTP fetch, and readable handshake errors for Nim. No `-d:ssl`, no `libssl.so.1.1` vs `3.x` roulette, no copying `libcrypto.dll` next to your `.exe`.
 
-Built because shipping a 500 KB Nim binary only for it to crash with `could not load: libssl.so.1.1` or `No SSL/TLS CA certificates found` on Windows or Alpine is a rite of passage nobody asked for.
+If you have ever dropped a tiny Nim binary into an Alpine container or onto a fresh Windows box and immediately watched it faceplant with `could not load: libssl` or `No SSL/TLS CA certificates found`, this is for that.
 
 ---
 
-## What it does
+## How it works
 
-- **Static BearSSL 0.6 via `{.compile.}`:** Vendored MIT C99 source compiled directly by `nim c`. Zero CMake, zero Make, zero runtime OpenSSL `dlopen`. On Windows, the release CLI imports only `KERNEL32.dll`, `ADVAPI32.dll`, and `msvcrt.dll`.
-- **Tiered CA trust store:** Resolves root certificates in order:
-  1. Explicit path (`caBundlePath` / `--ca-file`)
-  2. `SSL_CERT_FILE` / `NIMVAULT_CA_BUNDLE`
-  3. Native OS store — Windows CryptoAPI `ROOT` (`crypt32.dll`), standard Linux/BSD CA bundle paths, macOS `/etc/ssl/cert.pem` & `SystemRootCertificates.keychain`
-  4. Compile-time embedded Mozilla CA bundle (`-d:nimvaultEmbedRoots`, ~200 KB via `staticRead`) so even a `FROM scratch` container works out of the box.
-- **Sans-I/O core (`TlsEngine`):** Pure state machine with zero socket code. The same engine drives `std/net` (sync), `std/asyncdispatch` (async), custom loops (Chronos, `io_uring`, memory), and the C-ABI (`include/nimvault.h`).
-- **Diagnostics that actually say what broke:** Maps BearSSL X.509 codes and RFC 5246 alerts into `VaultError` (`kind`, `code`, `alertCode`, `message`, `likelyCause`, `suggestion`). Captures the peer leaf cert *before* verification fails so `nimvault probe` still prints Subject/SANs/expiry on broken certs.
-- **Built-in CLI:** `trust`, `probe`, `keygen` (ECDSA P-256 + self-signed X.509 v3 with SANs), and `version`.
+- **BearSSL 0.6 baked in via `{.compile.}`:** All 277 C files live under `src/nimvault/vendor/bearssl/` and get compiled straight by `nim c`. No CMake, no Make, no pkg-config. On Windows, the release binary only imports `KERNEL32.dll`, `ADVAPI32.dll`, and `msvcrt.dll`.
+- **Tiered CA lookup:** Checks in order:
+  1. Explicit CA file (`caBundlePath` / `--ca-file`) — fails loud if bad, never silently falls back
+  2. `SSL_CERT_FILE` or `NIMVAULT_CA_BUNDLE`
+  3. Native OS store: Windows CryptoAPI `ROOT` (`crypt32.dll`), standard Linux/BSD CA bundle paths, macOS `/etc/ssl/cert.pem` & `SystemRootCertificates.keychain`
+  4. Compile-time embedded Mozilla roots (`-d:nimvaultEmbedRoots`, ~200 KB via `staticRead`) so even a `FROM scratch` image verifies certs.
+- **Sans-I/O core (`TlsEngine`):** Zero socket code in the state machine. One engine drives `std/net` (sync client & server), `std/asyncdispatch` (async client & server), custom loops, and the C-ABI (`include/nimvault.h`).
+- **Errors you can actually debug:** Translates BearSSL X.509 codes and RFC 5246 alerts into `VaultError` with cause + fix hints, and grabs the server's leaf cert *before* validation rejects it so `nimvault probe` still shows the Subject, SANs, and expiry on a broken handshake.
 
-## Caveat (read before filing an issue)
+### One important caveat
 
-BearSSL implements **TLS 1.0–1.2** (`ECDHE+AES-GCM` and `ECDHE+ChaCha20-Poly1305`), **not TLS 1.3**. That still covers nearly the entire public internet, and keeps the static backend tiny and audit-friendly. If you hit a strict TLS-1.3-only endpoint, `nimvault` tells you that explicitly instead of throwing `sslv3 alert handshake failure`.
+BearSSL speaks **TLS 1.0–1.2** (`ECDHE+AES-GCM` and `ECDHE+ChaCha20-Poly1305`), **not TLS 1.3**. That still works against almost every server on the internet and keeps the vendored C backend tiny and audit-friendly. If you hit a strict TLS-1.3-only box, `nimvault` tells you straight up instead of dumping `sslv3 alert handshake failure`.
+
+---
+
+## Install
+
+```bash
+nimble install https://github.com/cryogenicdeadfrost/nimvault
+```
+
+Or build the standalone CLI directly from a clone:
+
+```bash
+nim c -d:release -d:nimvaultEmbedRoots -o:nimvault src/nimvault_cli.nim
+```
+
+Prebuilt binaries (`linux-amd64`, `macos-arm64`, `windows-amd64`) and C-ABI shared libs are also attached on the [Releases](https://github.com/cryogenicdeadfrost/nimvault/releases) page.
 
 ---
 
 ## CLI
 
 ```bash
-nim c -d:release -d:nimvaultEmbedRoots -o:nimvault src/nimvault_cli.nim
-```
+# See which CA store won and how many roots loaded
+nimvault trust
 
-```bash
-# Check which trust store won and how many CAs loaded
-./nimvault trust
+# Inspect a live TLS endpoint (--json or --insecure when debugging)
+nimvault probe github.com
+nimvault probe github.com --sni wrong.example.com
 
-# Inspect a live TLS endpoint (add --json or --insecure when debugging)
-./nimvault probe github.com
-./nimvault probe github.com --sni wrong.example.com
+# Minimal HTTPS GET/HEAD without curl or OpenSSL
+nimvault fetch --head https://example.com/
 
-# Generate an ECDSA P-256 keypair + self-signed X.509 v3 cert with SANs
-./nimvault keygen --cn localhost --san localhost --san api.local \
+# Mint a dev ECDSA P-256 keypair + self-signed X.509 v3 cert with SANs
+nimvault keygen --cn localhost --san localhost --san api.local \
   --cert-out dev.cert.pem --key-out dev.key.pem
 ```
 
 ---
 
-## Library Usage
+## Library usage
 
-Compile your app with `-d:nimvaultEmbedRoots` if you want the fallback Mozilla CA bundle baked in. Do **not** pass `-d:ssl`.
+Pass `-d:nimvaultEmbedRoots` when compiling if you want the fallback Mozilla CA bundle baked into your binary. Do **not** pass `-d:ssl`.
 
-### Sync (`std/net`)
+### Quick HTTPS fetch (with chunked decoding + redirects)
 
 ```nim
 import nimvault
 
-let res = httpGet("example.com", "/")
+let res = fetch("https://example.com/")
 if res.isOk:
-  echo res.val.statusCode, " via ", res.val.peerInfo.protocolVersion,
-       " (", res.val.peerInfo.cipherSuite, ")"
+  echo res.val.statusLine, " via ", res.val.peerInfo.cipherSuite
+  echo res.val.body.len, " bytes"
 else:
-  echo formatDiagnostic(res.err)
+  echo prettyErr(res.err)
 ```
 
-### Async (`std/asyncdispatch`)
+### Sync / Async sockets (client and server)
 
 ```nim
 import std/asyncdispatch
 import nimvault
 
 proc main() {.async.} =
-  let conn = await connectAsync("example.com", 443)
+  let conn = await dialAsync("example.com", 443)
   if conn.isErr:
-    echo formatDiagnostic(conn.err)
+    echo prettyErr(conn.err)
     return
   let s = conn.val
-  discard await s.sendAsync("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
-  let chunk = await s.recvAsync(4096)
-  if chunk.isOk: echo chunk.val
+  discard await s.sendAsync("HEAD / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+  let resp = await s.recvAsync(4096)
+  if resp.isOk: echo resp.val
   await s.closeAsync()
 
 waitFor main()
 ```
 
-### Sans-I/O (`TlsEngine`)
+Need a local TLS server? Use `mintSelfSigned()` + `wrapServer()` (sync) or `wrapServerAsync()` (async). Full runnable examples live in [`examples/`](examples/):
 
-```nim
-import nimvault
-
-let eng = newClientEngine(defaultTlsConfig("example.com")).get()
-var buf: array[4096, byte]
-
-while true:
-  case eng.nextAction()
-  of taNeedWrite:
-    let n = eng.drainEncrypted(buf)
-    # write buf[0 ..< n] to whatever transport you own
-  of taNeedRead:
-    # read encrypted bytes from transport -> discard eng.feedEncrypted(...)
-    break
-  of taAppDataReady:
-    let n = eng.readPlaintext(buf)
-    # consume decrypted bytes in buf[0 ..< n]
-  of taReady:
-    discard eng.writePlaintext("ping")
-    eng.flush()
-  of taClosed: break
-  of taError:
-    echo formatDiagnostic(eng.lastError())
-    break
-```
+- [`examples/fetch_https.nim`](examples/fetch_https.nim) — standalone HTTPS GET
+- [`examples/async_fetch.nim`](examples/async_fetch.nim) — `std/asyncdispatch` client
+- [`examples/local_https_server.nim`](examples/local_https_server.nim) — self-signed local HTTPS server
+- [`examples/sans_io_mem.nim`](examples/sans_io_mem.nim) — zero-socket in-memory TLS 1.2 loopback
+- [`examples/c_embed.c`](examples/c_embed.c) — calling `libnimvault` from C99
 
 ### C-ABI (`include/nimvault.h`)
 
 ```bash
 # Linux
 nim c --app:lib -d:release -d:nimvaultEmbedRoots -o:libnimvault.so src/nimvault/cabi.nim
-gcc -Iinclude tests/test_cabi.c -L. -lnimvault -Wl,-rpath,. -o test_cabi
+gcc -Iinclude examples/c_embed.c -L. -lnimvault -Wl,-rpath,. -o c_embed
 
 # macOS
 nim c --app:lib -d:release -d:nimvaultEmbedRoots -o:libnimvault.dylib src/nimvault/cabi.nim
-cc -Iinclude tests/test_cabi.c -L. -lnimvault -Wl,-rpath,. -o test_cabi
+cc -Iinclude examples/c_embed.c -L. -lnimvault -Wl,-rpath,. -o c_embed
 
 # Windows (MinGW)
 nim c --app:lib -d:release -d:nimvaultEmbedRoots -o:nimvault.dll src/nimvault/cabi.nim
-gcc -Iinclude tests/test_cabi.c nimvault.dll -o test_cabi.exe
+gcc -Iinclude examples/c_embed.c nimvault.dll -o c_embed.exe
 ```
 
 ---
 
-## Layout
+## Running tests
 
-```
-src/
-├── nimvault.nim                  # Public library entry point
-├── nimvault_cli.nim              # CLI entry point
-└── nimvault/
-    ├── errors.nim                # VaultResult[T], VaultError, alert/X.509 diagnostics
-    ├── truststore.nim            # Env -> OS store -> staticRead Mozilla bundle
-    ├── x509.nim                  # Pure-Nim PEM, SHA-256, ASN.1 DER parser & encoder
-    ├── backend_bearssl.nim       # Static BearSSL bindings
-    ├── engine.nim                # Sans-I/O TlsEngine (client + server)
-    ├── keygen.nim                # ECDSA P-256 keygen + self-signed X.509 v3
-    ├── client.nim                # std/net wrapper + probe() + httpGet()
-    ├── async_client.nim          # std/asyncdispatch wrapper
-    ├── cabi.nim                  # C-ABI exports
-    ├── cli.nim                   # CLI commands
-    └── private/
-        ├── bearssl_shim.c        # Thin C wrapper + leaf-cert capturing X.509 vtable
-        └── bearssl_sources.nim   # Generated {.compile.} list (tools/gen_bearssl_sources.nim)
-include/nimvault.h                # C header
-vendor/bearssl/                   # BearSSL 0.6 C source (MIT)
-vendor/cacert.pem                 # Mozilla CA bundle (MPL-2.0)
+```bash
+nimble test
 ```
 
----
-
-## Tests
+Or individually:
 
 ```bash
 nim c -r --hints:off tests/test_errors.nim
@@ -168,8 +141,12 @@ nim c -r --hints:off -d:nimvaultEmbedRoots --threads:on tests/test_client_async.
 
 ---
 
+## AI usage note
+
+Transparency first: AI was used to grind out the boring repetitive lookup tables and boilerplate — specifically the RFC 5246 TLS alert / BearSSL error diagnostic table in `errors.nim` and initial ASN.1 DER parsing/test scaffolding. Every crypto primitive comes straight from audited BearSSL 0.6 (zero rolled-our-own TLS math), and everything is verified by CI across Linux, macOS, and Windows.
+
 ## Licenses
 
 - `nimvault`: MIT ([LICENSE](LICENSE))
-- BearSSL 0.6: MIT (`vendor/bearssl/LICENSE.txt`)
-- Mozilla CA bundle (`vendor/cacert.pem`): MPL-2.0 ([THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md))
+- BearSSL 0.6: MIT (`src/nimvault/vendor/bearssl/LICENSE.txt`)
+- Mozilla CA bundle (`src/nimvault/vendor/cacert.pem`): MPL-2.0 ([THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md))
