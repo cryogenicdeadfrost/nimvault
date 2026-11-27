@@ -1,9 +1,6 @@
 # nimtls
 
-Static TLS, CA trust store discovery, a Sans-I/O state machine, HTTP fetch, and readable handshake errors for Nim. No `-d:ssl`, no `libssl.so.1.1` vs `3.x` roulette, no copying `libcrypto.dll` next to your `.exe`.
-
-If you have ever dropped a tiny Nim binary into an Alpine container or onto a fresh Windows box and immediately watched it faceplant with `could not load: libssl` or `No SSL/TLS CA certificates found`, this is for that.
-
+nimtls is a small, self-contained TLS library and CLI for Nim that takes the pain out of shipping HTTPS apps. Instead of depending on system OpenSSL libraries that break across machines or Docker containers, it compiles BearSSL straight into your binary with a normal nim c. It automatically loads your OS root certificates and can bake Mozilla's CA bundle into the executable so minimal containers never crash with missing cert errors. Under the hood, one decoupled Sans-I/O engine powers sync sockets, async code, HTTPS requests, TLS servers, a C-ABI, and plain-English diagnostics whenever a handshake fails.
 ---
 
 ## How it works
