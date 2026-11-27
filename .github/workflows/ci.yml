@@ -38,7 +38,7 @@ jobs:
       - name: Build CLI and verify commands
         shell: bash
         run: |
-          nim c -d:release -d:nimtlsEmbedRoots -o:nimtls_bin src/nimtls_cli.nim
+          nim c -d:release -d:nimtlsEmbedRoots -o:nimtls_bin src/nimtls/cli.nim
           ./nimtls_bin version
           ./nimtls_bin trust
           ./nimtls_bin probe github.com

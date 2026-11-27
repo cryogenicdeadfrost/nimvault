@@ -40,7 +40,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          nim c -d:release -d:nimtlsEmbedRoots -o:dist/${{ matrix.cli_name }} src/nimtls_cli.nim
+          nim c -d:release -d:nimtlsEmbedRoots -o:dist/${{ matrix.cli_name }} src/nimtls/cli.nim
           nim c --app:lib -d:release -d:nimtlsEmbedRoots -o:dist/${{ matrix.lib_name }} src/nimtls/cabi.nim
           ./dist/${{ matrix.cli_name }} version
 

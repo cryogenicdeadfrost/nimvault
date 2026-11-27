@@ -32,7 +32,7 @@ nimble install https://github.com/cryogenicdeadfrost/nimtls
 Or build the standalone CLI directly from a clone:
 
 ```bash
-nim c -d:release -d:nimtlsEmbedRoots -o:nimtls src/nimtls_cli.nim
+nim c -d:release -d:nimtlsEmbedRoots -o:nimtls src/nimtls/cli.nim
 ```
 
 Prebuilt binaries (`linux-amd64`, `macos-arm64`, `windows-amd64`) and C-ABI shared libs are also attached on the [Releases](https://github.com/cryogenicdeadfrost/nimtls/releases) page.

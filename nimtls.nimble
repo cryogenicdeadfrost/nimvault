@@ -1,12 +1,12 @@
 # Package
 
-version       = "0.3.0"
+version       = "0.3.1"
 author        = "Abhradeep Basak <abhradeepbasak07@gmail.com>"
 description   = "Static BearSSL TLS, tiered OS/embedded CA trust store, Sans-I/O engine, HTTP fetch, C-ABI, and readable TLS errors for Nim"
 license       = "MIT"
 srcDir        = "src"
-installDirs   = @["nimtls"]
-namedBin      = {"nimtls_cli": "nimtls"}.toTable
+installExt    = @["nim", "c", "h", "pem", "txt"]
+namedBin      = {"nimtls/cli": "nimtls"}.toTable
 
 # Dependencies
 
@@ -23,7 +23,7 @@ task test, "Run all Nim tests":
   exec "nim c -r --hints:off -d:nimtlsEmbedRoots --threads:on tests/test_client_async.nim"
 
 task buildCli, "Build standalone nimtls CLI with embedded Mozilla roots":
-  exec "nim c -d:release -d:nimtlsEmbedRoots -o:nimtls src/nimtls_cli.nim"
+  exec "nim c -d:release -d:nimtlsEmbedRoots -o:nimtls src/nimtls/cli.nim"
 
 task examples, "Compile-check all standalone examples":
   exec "nim c --hints:off -d:nimtlsEmbedRoots examples/fetch_https.nim"

@@ -4,7 +4,7 @@ import std/[net, nativesockets, strutils, monotimes, times, tables]
 import ./errors
 import ./engine
 
-const ClientUserAgent* = "nimtls/0.3.0"
+const ClientUserAgent* = "nimtls/0.3.1"
 
 type
   TlsSocket* = ref object

@@ -4,7 +4,7 @@ import ./errors
 import ./truststore
 import ./engine
 
-const NimtlsVersionCstr = "0.3.0"
+const NimtlsVersionCstr = "0.3.1"
 
 proc stuffCstr(s: string, outBuf: cstring, cap: csize_t): csize_t =
   if outBuf == nil or cap == 0: return csize_t(s.len)

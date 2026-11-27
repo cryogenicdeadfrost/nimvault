@@ -1,6 +1,6 @@
 # CLI frontend: trust, probe, fetch, keygen, version.
 
-import std/[strutils, json, tables]
+import std/[os, strutils, json, tables]
 import ./errors
 import ./truststore
 import ./x509
@@ -8,7 +8,7 @@ import ./engine
 import ./client
 import ./keygen
 
-const NimtlsVersion* = "0.3.0"
+const NimtlsVersion* = "0.3.1"
 
 proc printUsage() =
   echo """nimtls """ & NimtlsVersion & """ (BearSSL 0.6 static TLS, zero OpenSSL)
@@ -375,3 +375,6 @@ proc runCli*(args: seq[string]): int =
     stderr.writeLine("Unknown command: ", args[0])
     printUsage()
     2
+
+when isMainModule:
+  quit(runCli(commandLineParams()))
