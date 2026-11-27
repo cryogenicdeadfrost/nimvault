@@ -20,6 +20,9 @@ nimcache_*/
 tests/test_*
 !tests/*.nim
 !tests/*.c
+examples/*
+!examples/*.nim
+!examples/*.c
 
 # Archives
 vendor/*.tar.gz
