@@ -1,4 +1,4 @@
-## Actionable TLS error types, Result container, and BearSSL/RFC 5246 diagnostics.
+# Error types, Result wrapper, and BearSSL/RFC 5246 code translators.
 
 import std/strutils
 
@@ -25,8 +25,8 @@ type
 
   VaultError* = object
     kind*: VaultErrorKind
-    code*: int           ## Raw backend error code (e.g. BearSSL BR_ERR_*), 0 if N/A
-    alertCode*: int      ## TLS alert code (0..255), or -1 if not a TLS alert
+    code*: int        # BearSSL BR_ERR_* code (0 if not from BearSSL)
+    alertCode*: int   # RFC 5246 alert id (0..255), -1 if not an alert
     message*: string
     likelyCause*: string
     suggestion*: string
@@ -59,8 +59,7 @@ proc err*[T](kind: VaultErrorKind, message: string,
     )
   )
 
-proc isErr*[T](r: VaultResult[T]): bool {.inline.} =
-  not r.isOk
+proc isErr*[T](r: VaultResult[T]): bool {.inline.} = not r.isOk
 
 proc get*[T](r: VaultResult[T]): T {.inline.} =
   if not r.isOk:
@@ -72,25 +71,20 @@ proc getOrElse*[T](r: VaultResult[T], fallback: T): T {.inline.} =
 
 proc `$`*(e: VaultError): string =
   result = e.message
-  if e.likelyCause.len > 0:
-    result.add(" | Cause: " & e.likelyCause)
-  if e.suggestion.len > 0:
-    result.add(" | Fix: " & e.suggestion)
+  if e.likelyCause.len > 0: result.add(" | Cause: " & e.likelyCause)
+  if e.suggestion.len > 0: result.add(" | Fix: " & e.suggestion)
 
-proc formatDiagnostic*(e: VaultError): string =
-  ## Human-friendly multi-line diagnostic string for CLI and logs.
-  var lines: seq[string] = @[]
-  lines.add("Error [" & $e.kind & "]: " & e.message)
+proc prettyErr*(e: VaultError): string =
+  var lines = @["Error [" & $e.kind & "]: " & e.message]
   if e.code != 0:
     var meta = "  Backend Code: " & $e.code
-    if e.alertCode >= 0:
-      meta.add(" (TLS alert " & $e.alertCode & ")")
+    if e.alertCode >= 0: meta.add(" (TLS alert " & $e.alertCode & ")")
     lines.add(meta)
-  if e.likelyCause.len > 0:
-    lines.add("  Likely Cause: " & e.likelyCause)
-  if e.suggestion.len > 0:
-    lines.add("  Suggestion:   " & e.suggestion)
+  if e.likelyCause.len > 0: lines.add("  Likely Cause: " & e.likelyCause)
+  if e.suggestion.len > 0: lines.add("  Suggestion:   " & e.suggestion)
   lines.join("\n")
+
+proc formatDiagnostic*(e: VaultError): string {.inline.} = prettyErr(e)
 
 proc tlsAlertName*(alertCode: int): string =
   case alertCode
@@ -127,7 +121,7 @@ proc tlsAlertName*(alertCode: int): string =
   of 120: "no_application_protocol"
   else: "unknown_alert(" & $alertCode & ")"
 
-proc diagnoseTlsAlert*(alertCode: int, received: bool, serverName = ""): VaultError =
+proc explainAlert(alertCode: int, received: bool, serverName = ""): VaultError =
   let name = tlsAlertName(alertCode)
   let dir = if received: "received from peer" else: "sent to peer"
   let baseCode = if received: 256 + alertCode else: 512 + alertCode
@@ -135,224 +129,185 @@ proc diagnoseTlsAlert*(alertCode: int, received: bool, serverName = ""): VaultEr
 
   case alertCode
   of 0:
-    VaultError(
-      kind: veConnectionClosed,
-      code: baseCode,
-      alertCode: alertCode,
+    VaultError(kind: veConnectionClosed, code: baseCode, alertCode: alertCode,
       message: "TLS close_notify " & dir,
       likelyCause: "Peer initiated a graceful TLS shutdown.",
-      suggestion: "Close the underlying socket cleanly."
-    )
+      suggestion: "Close the socket cleanly.")
   of 40:
-    VaultError(
-      kind: veHandshakeFailed,
-      code: baseCode,
-      alertCode: alertCode,
+    VaultError(kind: veHandshakeFailed, code: baseCode, alertCode: alertCode,
       message: "Server rejected handshake (TLS alert 40: handshake_failure)",
-      likelyCause: "SNI hostname mismatch, TLS 1.2 disabled on server (TLS 1.3-only endpoint), or no mutually supported cipher suites.",
-      suggestion: "Verify the SNI hostname" & (if serverName.len > 0: " ('" & serverName & "')" else: "") &
-                  " and check whether the server permits TLS 1.2 (BearSSL supports TLS 1.0-1.2)."
-    )
+      likelyCause: "SNI mismatch, server disabled TLS 1.2 (TLS 1.3-only), or no overlapping cipher suites.",
+      suggestion: "Check SNI" & (if serverName.len > 0: " ('" & serverName & "')" else: "") &
+                  " and make sure the server accepts TLS 1.2 (BearSSL stops at TLS 1.2).")
   of 42, 43, 46:
-    VaultError(
-      kind: veCertificateInvalid,
-      code: baseCode,
-      alertCode: alertCode,
+    VaultError(kind: veCertificateInvalid, code: baseCode, alertCode: alertCode,
       message: "Certificate rejected (TLS alert " & $alertCode & ": " & name & ")",
-      likelyCause: "The peer certificate failed format, policy, or chain checks.",
-      suggestion: "Inspect the server certificate with `nimvault probe --insecure <host>`."
-    )
+      likelyCause: "Peer cert failed format, policy, or chain checks.",
+      suggestion: "Run `nimvault probe --insecure <host>` to see what cert the server actually sent.")
   of 45:
-    VaultError(
-      kind: veCertificateExpired,
-      code: baseCode,
-      alertCode: alertCode,
+    VaultError(kind: veCertificateExpired, code: baseCode, alertCode: alertCode,
       message: "Certificate expired (TLS alert 45: certificate_expired)",
-      likelyCause: "The certificate validity period has expired or the system clock is skewed.",
-      suggestion: "Check system UTC time or renew the server certificate."
-    )
+      likelyCause: "Cert validity window passed or local clock is way off.",
+      suggestion: "Check UTC clock or renew the cert.")
   of 48:
-    VaultError(
-      kind: veCertificateUntrusted,
-      code: baseCode,
-      alertCode: alertCode,
-      message: "Unknown certificate authority (TLS alert 48: unknown_ca)",
-      likelyCause: "The peer does not trust the presented certificate chain or CA root.",
-      suggestion: "Provide the custom CA bundle via SSL_CERT_FILE or `--ca-file`."
-    )
+    VaultError(kind: veCertificateUntrusted, code: baseCode, alertCode: alertCode,
+      message: "Unknown CA (TLS alert 48: unknown_ca)",
+      likelyCause: "Peer doesn't trust the cert chain or issuing CA.",
+      suggestion: "Pass the custom CA via SSL_CERT_FILE or `--ca-file`.")
   of 70:
-    VaultError(
-      kind: veProtocolVersionUnsupported,
-      code: baseCode,
-      alertCode: alertCode,
+    VaultError(kind: veProtocolVersionUnsupported, code: baseCode, alertCode: alertCode,
       message: "Protocol version rejected (TLS alert 70: protocol_version)",
-      likelyCause: "The peer requires a TLS version outside the configured range (for example, a TLS 1.3-only server).",
-      suggestion: "BearSSL supports TLS 1.0-1.2; ensure the endpoint enables TLS 1.2 or check min/max version settings."
-    )
+      likelyCause: "Server probably demands TLS 1.3 only, or min/max TLS version doesn't overlap.",
+      suggestion: "BearSSL supports TLS 1.0-1.2; verify the endpoint permits TLS 1.2.")
   of 71:
-    VaultError(
-      kind: veCipherSuiteMismatch,
-      code: baseCode,
-      alertCode: alertCode,
+    VaultError(kind: veCipherSuiteMismatch, code: baseCode, alertCode: alertCode,
       message: "Insufficient security (TLS alert 71: insufficient_security)",
-      likelyCause: "Server security policy rejected the offered TLS version or cipher suites.",
-      suggestion: "Ensure TLS 1.2 with AEAD cipher suites (ECDHE+AES-GCM/ChaCha20) is permitted."
-    )
+      likelyCause: "Server policy rejected offered TLS version or cipher suites.",
+      suggestion: "Check that TLS 1.2 AEAD suites (ECDHE+AES-GCM/ChaCha20) are allowed.")
   of 80:
-    VaultError(
-      kind: defaultKind,
-      code: baseCode,
-      alertCode: alertCode,
+    VaultError(kind: defaultKind, code: baseCode, alertCode: alertCode,
       message: "Peer reported internal TLS error (TLS alert 80: internal_error)",
-      likelyCause: "Misconfigured server/proxy, missing backend certificate, or transient server fault.",
-      suggestion: "Retry or check reverse proxy / TLS termination logs on the server."
-    )
+      likelyCause: "Server/proxy hiccup or missing backend cert.",
+      suggestion: "Retry or check reverse proxy logs.")
   of 112:
-    VaultError(
-      kind: veHostnameMismatch,
-      code: baseCode,
-      alertCode: alertCode,
+    VaultError(kind: veHostnameMismatch, code: baseCode, alertCode: alertCode,
       message: "Server rejected SNI hostname (TLS alert 112: unrecognized_name)",
-      likelyCause: "The SNI hostname" & (if serverName.len > 0: " '" & serverName & "'" else: "") &
-                   " is not recognized by the server's virtual host configuration.",
-      suggestion: "Pass the correct domain name in `serverName` / `--sni`."
-    )
+      likelyCause: "SNI" & (if serverName.len > 0: " '" & serverName & "'" else: "") &
+                   " isn't configured on this server's vhosts.",
+      suggestion: "Pass the real domain in `serverName` / `--sni`.")
   of 120:
-    VaultError(
-      kind: veAlpnMismatch,
-      code: baseCode,
-      alertCode: alertCode,
-      message: "ALPN protocol negotiation failed (TLS alert 120: no_application_protocol)",
-      likelyCause: "None of the client's offered ALPN protocols are supported by the server.",
-      suggestion: "Adjust offered ALPN protocols (e.g. 'http/1.1') or omit ALPN."
-    )
+    VaultError(kind: veAlpnMismatch, code: baseCode, alertCode: alertCode,
+      message: "ALPN negotiation failed (TLS alert 120: no_application_protocol)",
+      likelyCause: "Server doesn't speak any of the offered ALPN protocols.",
+      suggestion: "Offer 'http/1.1' or leave ALPN empty.")
   else:
-    VaultError(
-      kind: defaultKind,
-      code: baseCode,
-      alertCode: alertCode,
+    VaultError(kind: defaultKind, code: baseCode, alertCode: alertCode,
       message: "Fatal TLS alert " & $alertCode & " (" & name & ") " & dir,
-      likelyCause: "Peer terminated the TLS session with alert '" & name & "'.",
-      suggestion: "Inspect peer configuration or run `nimvault probe` with `--insecure` to inspect the handshake."
-    )
+      likelyCause: "Peer killed the session with alert '" & name & "'.",
+      suggestion: "Try `nimvault probe --insecure <host>` to inspect the handshake.")
 
-proc diagnoseBearSslError*(brErr: int, serverName = ""): VaultError =
-  ## Maps raw BearSSL error codes (BR_ERR_*, BR_ERR_X509_*, and fatal alerts)
-  ## into actionable human-readable VaultError diagnostics.
+proc diagnoseTlsAlert*(alertCode: int, received: bool, serverName = ""): VaultError {.inline.} =
+  explainAlert(alertCode, received, serverName)
+
+proc decodeBearErr*(brErr: int, serverName = ""): VaultError =
   if brErr == 0:
     return VaultError(kind: veNone, code: 0, alertCode: -1, message: "No error")
 
+  # BearSSL encodes fatal alerts as 256+alert (recv) and 512+alert (sent)
   if brErr >= 256 and brErr < 512:
-    return diagnoseTlsAlert(brErr - 256, received = true, serverName = serverName)
+    return explainAlert(brErr - 256, received = true, serverName = serverName)
   if brErr >= 512 and brErr < 768:
-    return diagnoseTlsAlert(brErr - 512, received = false, serverName = serverName)
+    return explainAlert(brErr - 512, received = false, serverName = serverName)
 
   case brErr
   of 1:
     VaultError(kind: veInvalidConfig, code: brErr, alertCode: -1,
       message: "Invalid TLS engine parameter (BR_ERR_BAD_PARAM)",
-      likelyCause: "An invalid configuration option or null buffer was supplied.",
-      suggestion: "Check TlsConfig parameters (versions, SNI, ALPN, certificates).")
+      likelyCause: "Bad config value or null buffer passed into BearSSL.",
+      suggestion: "Check TlsConfig fields (versions, SNI, ALPN, certs).")
   of 2:
     VaultError(kind: veInternalError, code: brErr, alertCode: -1,
-      message: "Invalid TLS engine state transition (BR_ERR_BAD_STATE)",
-      likelyCause: "Engine operation called out of order.",
-      suggestion: "Drive I/O strictly according to `nextAction()`.")
+      message: "Invalid TLS engine state (BR_ERR_BAD_STATE)",
+      likelyCause: "Engine read/write called out of turn.",
+      suggestion: "Follow `nextAction()` strictly.")
   of 3, 4:
     VaultError(kind: veProtocolVersionUnsupported, code: brErr, alertCode: -1,
-      message: "Unsupported or mismatched TLS protocol version (BR_ERR_" &
+      message: "Unsupported or mismatched TLS version (BR_ERR_" &
                (if brErr == 3: "UNSUPPORTED_VERSION" else: "BAD_VERSION") & ")",
-      likelyCause: "Peer responded with an unsupported TLS version or plaintext HTTP instead of TLS.",
-      suggestion: "Confirm you are connecting to a TLS port (e.g. 443) and that TLS 1.2 is enabled.")
+      likelyCause: "Peer speaks an unsupported TLS version or plain HTTP on this port.",
+      suggestion: "Make sure the port actually speaks TLS (usually 443) and allows TLS 1.2.")
   of 5, 6:
     VaultError(kind: veHandshakeFailed, code: brErr, alertCode: -1,
       message: "Invalid or oversized TLS record (code " & $brErr & ")",
-      likelyCause: "Peer may be speaking plaintext HTTP/non-TLS on this port, or sent a record exceeding TLS limits.",
-      suggestion: "Verify the target host and port speak TLS.")
+      likelyCause: "Port is probably speaking plaintext HTTP instead of TLS, or record exceeded 16 KB.",
+      suggestion: "Verify target host and port speak TLS.")
   of 7:
     VaultError(kind: veHandshakeFailed, code: brErr, alertCode: -1,
-      message: "Record decryption or MAC verification failed (BR_ERR_BAD_MAC)",
-      likelyCause: "Corrupted network stream, middlebox tampering, or mismatched cipher state.",
+      message: "Record decryption/MAC failed (BR_ERR_BAD_MAC)",
+      likelyCause: "Corrupted stream, broken middlebox, or key state desync.",
       suggestion: "Check for intercepting proxies or packet corruption.")
   of 8:
     VaultError(kind: veInternalError, code: brErr, alertCode: -1,
-      message: "No cryptographic entropy available (BR_ERR_NO_RANDOM)",
-      likelyCause: "Operating system CSPRNG seeding failed.",
-      suggestion: "Ensure OS entropy source (/dev/urandom or Windows CryptoAPI) is accessible.")
+      message: "No OS entropy available (BR_ERR_NO_RANDOM)",
+      likelyCause: "System CSPRNG seeding failed.",
+      suggestion: "Make sure /dev/urandom or Windows CryptoAPI is reachable.")
   of 9, 10, 12, 13, 14:
     VaultError(kind: veHandshakeFailed, code: brErr, alertCode: -1,
       message: "Malformed or unexpected TLS handshake message (code " & $brErr & ")",
-      likelyCause: "Peer may not be a TLS server (e.g. HTTP plaintext on port 80) or middlebox corrupted the handshake.",
-      suggestion: "Verify the port uses TLS and check firewall/proxy rules.")
+      likelyCause: "Target isn't a TLS server (e.g. plain HTTP on port 80) or middlebox mangled it.",
+      suggestion: "Double-check port and proxy/firewall rules.")
   of 16:
     VaultError(kind: veCipherSuiteMismatch, code: brErr, alertCode: -1,
-      message: "Incompatible cipher suite selected (BR_ERR_BAD_CIPHER_SUITE)",
-      likelyCause: "Server chose a cipher suite not offered or supported by the client.",
-      suggestion: "Verify server cipher suite configuration.")
+      message: "Incompatible cipher suite (BR_ERR_BAD_CIPHER_SUITE)",
+      likelyCause: "Server picked a cipher suite we didn't offer.",
+      suggestion: "Check server cipher suite config.")
   of 21:
     VaultError(kind: veHostnameMismatch, code: brErr, alertCode: -1,
       message: "Invalid SNI extension (BR_ERR_BAD_SNI)",
-      likelyCause: "Malformed Server Name Indication hostname.",
-      suggestion: "Provide a valid DNS hostname without scheme or port.")
+      likelyCause: "Malformed hostname in SNI.",
+      suggestion: "Pass a bare hostname with no scheme or port.")
   of 23:
     VaultError(kind: veHandshakeFailed, code: brErr, alertCode: -1,
       message: "Cryptographic limit exceeded (BR_ERR_LIMIT_EXCEEDED)",
-      likelyCause: "Peer's certificate key (e.g. >4096-bit RSA) or handshake exceeded engine limits.",
-      suggestion: "Inspect peer certificate key parameters.")
+      likelyCause: "Server cert key (e.g. >4096-bit RSA) blew past BearSSL's static buffers.",
+      suggestion: "Inspect the server's key size.")
   of 26, 27:
     VaultError(kind: veHandshakeFailed, code: brErr, alertCode: -1,
-      message: "Unsupported algorithm or invalid handshake signature (code " & $brErr & ")",
-      likelyCause: "Server used an unsupported elliptic curve/signature algorithm (e.g. Ed25519-only) or invalid signature.",
+      message: "Unsupported algorithm or bad handshake signature (code " & $brErr & ")",
+      likelyCause: "Peer used an unsupported curve/sig algo (e.g. Ed25519-only) or signature didn't verify.",
       suggestion: "BearSSL supports RSA (PKCS#1 v1.5) and ECDSA (P-256/P-384/P-521) with ECDHE/X25519.")
   of 31:
     VaultError(kind: veIoError, code: brErr, alertCode: -1,
-      message: "Underlying transport I/O error or premature EOF (BR_ERR_IO)",
-      likelyCause: "TCP connection was reset or closed mid-handshake (firewall, idle timeout, or port mismatch).",
-      suggestion: "Check network reachability and firewall rules.")
+      message: "Transport I/O error or early EOF (BR_ERR_IO)",
+      likelyCause: "TCP reset or drop mid-handshake.",
+      suggestion: "Check network reachability and firewall.")
   of 33..51:
     VaultError(kind: veCertificateInvalid, code: brErr, alertCode: -1,
-      message: "Peer X.509 certificate decoding/structure error (BR_ERR_X509 code " & $brErr & ")",
-      likelyCause: "Certificate chain is empty, truncated, malformed ASN.1, or uses an unsupported key/extension.",
-      suggestion: "Inspect the server certificate chain with `nimvault probe --insecure`.")
+      message: "X.509 certificate decode error (BR_ERR_X509 code " & $brErr & ")",
+      likelyCause: "Empty/truncated chain, malformed ASN.1, or unsupported extension.",
+      suggestion: "Inspect with `nimvault probe --insecure`.")
   of 52:
     VaultError(kind: veCertificateInvalid, code: brErr, alertCode: -1,
-      message: "Invalid certificate signature in chain (BR_ERR_X509_BAD_SIGNATURE)",
-      likelyCause: "A certificate in the server's chain failed cryptographic signature verification.",
-      suggestion: "Verify the server's fullchain certificate bundle is properly ordered and uncorrupted.")
+      message: "Invalid certificate signature (BR_ERR_X509_BAD_SIGNATURE)",
+      likelyCause: "A cert in the chain failed signature verification.",
+      suggestion: "Check the server's fullchain ordering and integrity.")
   of 53:
     VaultError(kind: veCertificateExpired, code: brErr, alertCode: -1,
-      message: "Certificate validation time unknown (BR_ERR_X509_TIME_UNKNOWN)",
-      likelyCause: "System clock was not available during certificate validity check.",
-      suggestion: "Ensure system clock is properly set.")
+      message: "Validation clock unavailable (BR_ERR_X509_TIME_UNKNOWN)",
+      likelyCause: "System clock wasn't available when checking cert dates.",
+      suggestion: "Check OS time.")
   of 54:
     VaultError(kind: veCertificateExpired, code: brErr, alertCode: -1,
-      message: "Peer certificate is expired or not yet valid (BR_ERR_X509_EXPIRED)",
-      likelyCause: "The current UTC date falls outside the certificate's NotBefore..NotAfter window.",
-      suggestion: "Check your system clock or renew the server's TLS certificate.")
+      message: "Certificate expired or not yet valid (BR_ERR_X509_EXPIRED)",
+      likelyCause: "Current UTC time is outside NotBefore..NotAfter.",
+      suggestion: "Check system clock or renew the cert.")
   of 55:
     VaultError(kind: veCertificateUntrusted, code: brErr, alertCode: -1,
-      message: "Certificate chain Issuer/Subject DN mismatch (BR_ERR_X509_DN_MISMATCH)",
-      likelyCause: "Server sent certificates out of order or missing an intermediate CA certificate.",
-      suggestion: "Ensure the server sends the complete leaf + intermediate certificate chain.")
+      message: "Chain Issuer/Subject DN mismatch (BR_ERR_X509_DN_MISMATCH)",
+      likelyCause: "Server sent certs out of order or forgot an intermediate CA.",
+      suggestion: "Serve the fullchain bundle (leaf + intermediates).")
   of 56:
     let target = if serverName.len > 0: " for '" & serverName & "'" else: ""
     let targetParen = if serverName.len > 0: " ('" & serverName & "')" else: ""
     VaultError(kind: veHostnameMismatch, code: brErr, alertCode: -1,
       message: "Certificate hostname mismatch" & target & " (BR_ERR_X509_BAD_SERVER_NAME)",
-      likelyCause: "The server's certificate SAN (dNSName) and CN do not match the requested hostname" & targetParen & ".",
-      suggestion: "Connect using a hostname listed in the certificate's SANs, or pass the matching `--sni` name.")
+      likelyCause: "Cert SANs and CN don't match the requested hostname" & targetParen & ".",
+      suggestion: "Use a hostname listed in the cert SANs or override `--sni`.")
   of 57, 58, 59, 60:
     VaultError(kind: veCertificateInvalid, code: brErr, alertCode: -1,
-      message: "Certificate constraint or key usage violation (BR_ERR_X509 code " & $brErr & ")",
-      likelyCause: "Certificate failed BasicConstraints (not a CA), KeyUsage, unknown critical extension, or weak key (<1024-bit RSA) checks.",
-      suggestion: "Inspect the server certificate extensions with `nimvault probe --insecure`.")
+      message: "Cert constraint or key usage violation (BR_ERR_X509 code " & $brErr & ")",
+      likelyCause: "Failed BasicConstraints, KeyUsage, unknown critical ext, or tiny RSA key (<1024-bit).",
+      suggestion: "Inspect extensions with `nimvault probe --insecure`.")
   of 62:
     VaultError(kind: veCertificateUntrusted, code: brErr, alertCode: -1,
       message: "Certificate chain not trusted (BR_ERR_X509_NOT_TRUSTED)",
-      likelyCause: "The server's certificate is self-signed, issued by a private/corporate CA, or missing an intermediate certificate.",
-      suggestion: "Add the issuing CA via `SSL_CERT_FILE` / `--ca-file`, compile with `-d:nimvaultEmbedRoots`, or verify server sends fullchain.")
+      likelyCause: "Self-signed cert, private/corp CA, or missing intermediate.",
+      suggestion: "Pass the CA via `SSL_CERT_FILE` / `--ca-file`, or compile with `-d:nimvaultEmbedRoots`.")
   else:
     VaultError(kind: veHandshakeFailed, code: brErr, alertCode: -1,
       message: "TLS engine error (BearSSL code " & $brErr & ")",
-      likelyCause: "Unhandled TLS protocol or verification error.",
-      suggestion: "Inspect connection details with `nimvault probe --insecure`.")
+      likelyCause: "Unhandled BearSSL error.",
+      suggestion: "Run `nimvault probe --insecure` to inspect what happened.")
+
+proc diagnoseBearSslError*(brErr: int, serverName = ""): VaultError {.inline.} =
+  decodeBearErr(brErr, serverName)

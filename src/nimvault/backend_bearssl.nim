@@ -1,7 +1,6 @@
-## Low-level bindings to the statically vendored BearSSL 0.6 engine shim.
-## Importing this module compiles BearSSL directly via Nim {.compile.} pragmas
-## with zero CMake, zero Make, and zero system OpenSSL dependencies.
+# Low-level FFI to our static BearSSL 0.6 C shim (zero OpenSSL, zero CMake).
 
+import std/strutils
 import ./private/bearssl_sources
 export bearssl_sources
 
@@ -94,7 +93,7 @@ proc tlsVersionName*(version: uint32): string =
   of BR_TLS12: "TLS 1.2"
   of 0x0304'u32: "TLS 1.3"
   of 0'u32: "Negotiating"
-  else: "Unknown(0x" & $version & ")"
+  else: "Unknown(0x" & toHex(version, 4) & ")"
 
 proc cipherSuiteName*(suite: uint16): string =
   case suite
@@ -119,4 +118,4 @@ proc cipherSuiteName*(suite: uint16): string =
   of 0x002F'u16: "TLS_RSA_WITH_AES_128_CBC_SHA"
   of 0x0035'u16: "TLS_RSA_WITH_AES_256_CBC_SHA"
   of 0x0000'u16: "NONE"
-  else: "CIPHER_0x" & $suite
+  else: "CIPHER_0x" & toHex(suite, 4)
